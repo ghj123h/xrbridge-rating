@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7f3">
+  <meta name="description" content="查看新睿桥牌等级分排行榜、牌手的等级分轨迹与近 30 日计分对局。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23182d40'/%3E%3Ctext x='20' y='30' text-anchor='middle' font-size='32' fill='%23eff5e9'%3E%E2%99%A0%3C/text%3E%3C/svg%3E">
+  <title>新睿等级分 · 每一场，记录进步</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#" aria-label="新睿等级分首页">
+        <span class="brand-symbol" aria-hidden="true">♠</span>
+        <span class="brand-copy"><span class="brand-title">新睿等级分 <span class="brand-kicker">BRIDGE SCORES</span></span><span class="brand-tagline">每一场，记录进步。</span></span>
+      </a>
+      <nav class="main-nav" aria-label="主导航">
+        <a href="#" class="nav-link">排行榜</a>
+        <a href="#rules" class="nav-link">等级分规则</a>
+      </nav>
+      <span class="update-chip"><span class="status-dot" aria-hidden="true"></span><span id="header-update">数据加载中</span></span>
+    </div>
+  </header>
+
+  <main class="site-main">
+    <div id="loading-state" class="loading-state" role="status"><span class="loading-spinner" aria-hidden="true"></span>正在读取等级分数据…</div>
+    <div id="error-state" class="error-state" role="alert" hidden><p id="error-message">等级分数据暂时未能加载，请重试。</p><button id="retry-load" type="button" class="button button-primary">重新加载</button></div>
+
+    <section id="home-view">
+      <section class="hero" aria-labelledby="home-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span> 从每一副牌，到每一步成长</p>
+          <h1 id="home-title">牌桌之外，<span>看见进步</span></h1>
+          <p class="hero-description">浏览排行榜，回看等级分轨迹。让每一次交锋，都留下清晰的记录。</p>
+        </div>
+        <div class="hero-search">
+          <label for="search-input" class="search-label">找到一位牌手</label>
+          <div class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg><input id="search-input" type="search" autocomplete="off" placeholder="输入牌手昵称" aria-describedby="search-status"><span class="search-hint" aria-hidden="true">⌕</span></div>
+          <p id="search-status" class="search-status" aria-live="polite">搜索牌手，或点击榜单中的名字查看个人页。</p>
+        </div>
+      </section>
+
+      <div id="site-stats" class="stats-grid" aria-label="等级分数据概览"></div>
+
+      <section class="panel ranking-panel" aria-labelledby="ranking-title">
+        <div class="panel-heading ranking-heading">
+          <div class="section-title"><span class="section-kicker">THE LEADERBOARD</span><h2 id="ranking-title">牌手榜单</h2></div>
+          <div class="board-tabs" role="tablist" aria-label="选择榜单">
+            <button class="board-tab active" data-board="rating" type="button" role="tab" aria-selected="true">排行榜</button>
+            <button class="board-tab" data-board="gainers" type="button" role="tab" aria-selected="false"><span class="tab-arrow up" aria-hidden="true">↗</span> 上分榜</button>
+            <button class="board-tab" data-board="losers" type="button" role="tab" aria-selected="false"><span class="tab-arrow down" aria-hidden="true">↘</span> 下分榜</button>
+          </div>
+        </div>
+        <div class="ranking-controls">
+          <label class="filter-field"><span>变化周期</span><select id="period-filter"><option value="1">昨日</option><option value="7" selected>近 7 日</option><option value="30">近 30 日</option></select></label>
+          <label class="filter-field"><span>状态</span><select id="status-filter"><option value="all">全部牌手</option><option value="mature">成熟</option><option value="provisional">暂定</option></select></label>
+          <label class="filter-field"><span>活跃度</span><select id="activity-filter"><option value="all">全部</option><option value="30">近 30 日活跃</option></select></label>
+        </div>
+        <p id="ranking-note" class="ranking-note">等级分随每日结算更新。</p>
+        <div class="table-scroll">
+          <table id="ranking-table" class="ranking-table">
+            <thead><tr><th scope="col">排名</th><th scope="col">牌手</th><th scope="col">等级分</th><th scope="col" id="change-column">近 7 日变化</th><th scope="col">有效场数</th></tr></thead>
+            <tbody id="ranking-body"></tbody>
+          </table>
+        </div>
+        <div id="ranking-empty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">♣</span><h3>没有符合条件的牌手</h3><p>试试其他昵称或筛选条件。</p></div>
+        <div class="pagination"><span class="pagination-caption">点击牌手姓名，探索他的等级分轨迹</span><div class="page-controls"><button id="prev-page" type="button" class="pagination-button" aria-label="上一页">←</button><span id="page-label">第 1 页</span><button id="next-page" type="button" class="pagination-button" aria-label="下一页">→</button><form id="page-jump" class="page-jump"><label for="page-number">跳至</label><input id="page-number" type="number" min="1" step="1" value="1" aria-label="跳转页码"><button type="submit" class="pagination-button">跳转</button></form></div></div>
+      </section>
+    </section>
+
+    <section id="player-view" hidden>
+      <div class="profile-navigation"><button id="back-home" type="button" class="text-button"><span aria-hidden="true">←</span> 返回榜单</button><button id="copy-link" type="button" class="button button-secondary"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 13 4-4m-7 1-2 2a4 4 0 0 0 6 6l2-2m-2-2 2-2a4 4 0 0 0-6-6l-2 2"></path></svg> 复制个人链接</button></div>
+      <header id="player-heading" class="profile-header"></header>
+      <div id="player-overview" class="overview-grid"></div>
+
+      <section class="panel chart-panel" aria-labelledby="chart-title">
+        <div class="panel-heading"><div class="section-title"><span class="section-kicker">THE JOURNEY</span><h2 id="chart-title">等级分轨迹</h2></div><div class="chart-controls"><button id="reset-zoom" type="button" class="button button-secondary" hidden>恢复范围</button><label class="compact-filter"><span>时间</span><select id="curve-period"><option value="all">全部历史</option><option value="30">近 30 日</option><option value="7">近 7 日</option></select></label></div></div>
+        <p id="chart-caption" class="panel-caption"></p>
+        <div id="rating-chart" class="rating-chart" aria-label="个人等级分历史曲线"></div>
+      </section>
+
+      <section class="panel matches-panel" aria-labelledby="matches-title">
+        <div class="panel-heading"><div class="section-title"><span class="section-kicker">RECENT GAMES</span><h2 id="matches-title">近 30 日计分对局</h2></div><label class="match-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg><input id="match-filter" type="search" placeholder="筛选赛事或对手" aria-label="筛选赛事或对手"></label></div>
+        <p id="recent-summary" class="panel-caption"></p>
+        <div id="match-list" class="match-list"></div>
+        <div class="more-matches-wrap"><button id="more-matches" type="button" class="button button-secondary" hidden>查看更多对局 <span aria-hidden="true">↓</span></button></div>
+      </section>
+    </section>
+
+    <section id="rules-view" class="rules-view" hidden>
+      <div class="rules-intro"><p class="eyebrow"><span></span> UNDERSTANDING YOUR SCORE</p><h1>读懂你的等级分</h1><p>关于分数，以及哪些比赛会被记录。</p></div>
+      <div id="rules-content" class="rules-content"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><div class="footer-inner"><div class="footer-brand"><span aria-hidden="true">♠</span> 新睿等级分 <span class="footer-motto">每一场，记录进步。</span></div><p id="footer-meta">公开等级分数据 · 每日更新</p><a href="#rules">了解等级分规则 <span aria-hidden="true">↗</span></a></div></footer>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
