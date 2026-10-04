@@ -4,7 +4,7 @@ import { drawScoreChart } from './score-chart.mjs';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const number = (value, digits = 0) => Number(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-const signed = value => `${value > 0 ? '+' : ''}${number(value, 2)}`;
+const signed = value => `${value > 0 ? '+' : ''}${formatRating(value)}`;
 const changeClass = value => value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral';
 const state = { manifest: null, index: null, board: 'rating', page: 0, pageSize: 30, history: new Map(), recent: new Map(), recentLimit: 60, routeSequence: 0 };
 
@@ -51,7 +51,7 @@ function renderStats() {
     ['已计分牌手', number(stats.players), `${number(stats.mature_players)} 人已成熟`],
     ['近 30 日活跃', number(stats.active_30d), '至少一场有效计分对局'],
     ['近 30 日对局', number(stats.valid_matches_30d), `${number(stats.boards_30d)} 副 · 每局只计一次`],
-    ['成熟牌手中位等级分', stats.median_mature_rating == null ? '—' : number(stats.median_mature_rating, 0), '当前已成熟牌手'],
+    ['成熟牌手中位等级分', stats.median_mature_rating == null ? '—' : formatRating(stats.median_mature_rating, 0), '当前已成熟牌手'],
   ];
   $('site-stats').innerHTML = cards.map(([label, value, detail]) => `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-detail">${detail}</div></div>`).join('');
   $('header-update').textContent = `数据截至 ${shiftDay(state.manifest.cutoff.slice(0, 10), -1)}`;
@@ -98,7 +98,7 @@ function renderOverview(player) {
     overviewCard('等级分', formatRating(player.display_rating), `最近更新 ${escape(player.last_rated_day || '—')}`),
     overviewCard('全站排名', rank == null ? '#-' : `#${number(rank)}`, percentile == null ? '暂定牌手暂不参与排名' : `超过 ${number(percentile, 2)}% 的成熟牌手`),
     overviewCard('近 30 日变化', signed(player.delta_30d), `近 7 日 ${signed(player.delta_7d)}`, changeClass(player.delta_30d)),
-    overviewCard('历史最高等级分', number(player.peak_display_rating, 2), `当前算法 · 覆盖自 ${state.manifest.history_start}`),
+    overviewCard('历史最高等级分', formatRating(player.peak_display_rating), `当前算法 · 覆盖自 ${state.manifest.history_start}`),
     overviewCard('有效计分对局', number(player.rated_match_count), matureNote),
     overviewCard('30 日场均 VP', player.avg_vp_30d == null ? '—' : number(player.avg_vp_30d, 2), `近 30 日 ${number(player.recent_match_count)} 场 · 归一化 20 VP`),
   ].join('');

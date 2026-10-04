@@ -3,8 +3,8 @@ export const dateNumber = value => Date.parse(`${value}T00:00:00Z`);
 export const dateString = value => new Date(value).toISOString().slice(0, 10);
 export const shiftDay = (value, days) => dateString(dateNumber(value) + days * DAY);
 
-export function formatRating(value) {
-  return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export function formatRating(value, digits = 2) {
+  return Number(value).toLocaleString('zh-CN', { useGrouping: false, minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 export function boardChangeKey(board, period) {

@@ -1,6 +1,4 @@
-import { DAY, dateNumber, dateString, axisRange, curvePoints, nearestPointIndex, selectionRange, historyMetrics } from './rating-core.mjs';
-
-const formatScore = value => Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+import { DAY, dateNumber, dateString, axisRange, curvePoints, nearestPointIndex, selectionRange, historyMetrics, formatRating } from './rating-core.mjs';
 
 export function drawScoreChart(container, { history, tiers, period, endDay, zoom, onZoom }) {
   const score = point => point[1];
@@ -26,7 +24,7 @@ export function drawScoreChart(container, { history, tiers, period, endDay, zoom
     const hi = Math.min(range.max, tier.upper_bound ?? range.max);
     return lo < hi ? `<rect x="${left}" y="${y(hi)}" width="${width}" height="${y(lo) - y(hi)}" fill="${tier.color}" fill-opacity="0.09"/>` : '';
   }).join('');
-  const grid = range.ticks.map(tick => `<line class="chart-grid" x1="${left}" x2="${W - right}" y1="${y(tick)}" y2="${y(tick)}"/><text class="chart-axis" x="${left - 12}" y="${y(tick) + 4}" text-anchor="end">${Number(tick).toLocaleString('zh-CN')}</text>`).join('');
+  const grid = range.ticks.map(tick => `<line class="chart-grid" x1="${left}" x2="${W - right}" y1="${y(tick)}" y2="${y(tick)}"/><text class="chart-axis" x="${left - 12}" y="${y(tick) + 4}" text-anchor="end">${Number(tick).toLocaleString('zh-CN', { useGrouping: false })}</text>`).join('');
   const boundaries = tiers.filter(tier => tier.lower_bound != null && tier.lower_bound > range.min && tier.lower_bound < range.max)
     .map(tier => `<line x1="${left}" x2="${W - right}" y1="${y(tier.lower_bound)}" y2="${y(tier.lower_bound)}" stroke="${tier.color}" stroke-opacity="0.35" stroke-dasharray="5 4"/>`).join('');
   const tickCount = compact ? 3 : 5;
@@ -58,8 +56,8 @@ export function drawScoreChart(container, { history, tiers, period, endDay, zoom
     hover.setAttribute('x1', pointX); hover.setAttribute('x2', pointX);
     hover.dataset.day = item.point[0];
     const metric = item.synthetic ? { delta: 0, performance: null } : metrics.get(item.point[0]);
-    const change = `${metric.delta > 0 ? '+' : ''}${formatScore(metric.delta)}`;
-    tooltip.innerHTML = `<strong>${item.point[0]}</strong><div><b>${formatScore(item.value)}</b> (${change})</div><div>表现分：${metric.performance == null ? '—' : formatScore(metric.performance)}</div>`;
+    const change = `${metric.delta > 0 ? '+' : ''}${formatRating(metric.delta)}`;
+    tooltip.innerHTML = `<strong>${item.point[0]}</strong><div><b>${formatRating(item.value)}</b> (${change})</div><div>表现分：${metric.performance == null ? '—' : formatRating(metric.performance)}</div>`;
     tooltip.hidden = false;
     const screenX = pointX / W * pos.rect.width;
     tooltip.style.left = `${Math.min(Math.max(screenX + 12, 8), Math.max(8, pos.rect.width - tooltip.offsetWidth - 10))}px`;
