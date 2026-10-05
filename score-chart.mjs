@@ -22,14 +22,13 @@ export function drawScoreChart(container, { history, tiers, period, endDay, zoom
   const bands = tiers.map(tier => {
     const lo = Math.max(range.min, tier.lower_bound ?? range.min);
     const hi = Math.min(range.max, tier.upper_bound ?? range.max);
-    return lo < hi ? `<rect x="${left}" y="${y(hi)}" width="${width}" height="${y(lo) - y(hi)}" fill="${tier.color}" fill-opacity="0.09"/>` : '';
+    return lo < hi ? `<rect x="${left}" y="${y(hi)}" width="${width}" height="${y(lo) - y(hi)}" fill="${tier.color}" fill-opacity="0.25"/>` : '';
   }).join('');
-  const grid = range.ticks.map(tick => `<line class="chart-grid" x1="${left}" x2="${W - right}" y1="${y(tick)}" y2="${y(tick)}"/><text class="chart-axis" x="${left - 12}" y="${y(tick) + 4}" text-anchor="end">${Number(tick).toLocaleString('zh-CN', { useGrouping: false })}</text>`).join('');
-  const boundaries = tiers.filter(tier => tier.lower_bound != null && tier.lower_bound > range.min && tier.lower_bound < range.max)
-    .map(tier => `<line x1="${left}" x2="${W - right}" y1="${y(tier.lower_bound)}" y2="${y(tier.lower_bound)}" stroke="${tier.color}" stroke-opacity="0.35" stroke-dasharray="5 4"/>`).join('');
+  const yLabels = range.ticks.map(tick => `<text class="chart-axis" x="${left - 12}" y="${y(tick) + 4}" text-anchor="end">${Number(tick).toLocaleString('zh-CN', { useGrouping: false })}</text>`).join('');
+  const axes = `<line class="chart-axis-line" x1="${left}" x2="${left}" y1="${top}" y2="${H - bottom}"/><line class="chart-axis-line" x1="${left}" x2="${W - right}" y1="${H - bottom}" y2="${H - bottom}"/>`;
   const tickCount = compact ? 3 : 5;
   const tickDays = [...new Set(Array.from({ length: tickCount }, (_, i) => dateString(Math.round((xMin + (xMax - xMin) * i / (tickCount - 1)) / DAY) * DAY)))].filter(day => dateNumber(day) >= xMin && dateNumber(day) <= xMax);
-  const xGrid = tickDays.map(day => `<line class="chart-grid" x1="${x(dateNumber(day))}" x2="${x(dateNumber(day))}" y1="${top}" y2="${H - bottom}"/><text class="chart-axis" x="${x(dateNumber(day))}" y="${H - bottom + 28}" text-anchor="middle">${day.slice(5).replace('-', '/')}</text>`).join('');
+  const xLabels = tickDays.map(day => `<text class="chart-axis" x="${x(dateNumber(day))}" y="${H - bottom + 28}" text-anchor="middle">${day.slice(5).replace('-', '/')}</text>`).join('');
   const path = selected.map((item, i) => `${i ? 'L' : 'M'} ${x(item.time)} ${y(item.value)}`).join(' ');
   const highest = history.points.reduce((best, point) => !best || score(point) > score(best) ? point : best, null);
   let peak = '';
@@ -37,7 +36,7 @@ export function drawScoreChart(container, { history, tiers, period, endDay, zoom
     const px = x(dateNumber(highest[0])), py = y(score(highest));
     peak = `<path class="chart-peak-marker" d="M ${px} ${py - 5} L ${px + 5} ${py + 4} L ${px - 5} ${py + 4} Z"/>`;
   }
-  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="等级分曲线，纵轴 ${range.min} 至 ${range.max}" data-y-min="${range.min}" data-y-max="${range.max}" data-x-min="${xMin}" data-x-max="${xMax}" data-point-count="${selected.length}">${bands}${grid}${xGrid}${boundaries}<path class="chart-line" d="${path}"/>${peak}<rect id="chart-selection" class="chart-selection" x="${left}" y="${top}" width="0" height="${height}" hidden/><line id="chart-hover-line" x1="0" x2="0" y1="${top}" y2="${H - bottom}" stroke="#1d5665" stroke-dasharray="3 4" hidden/></svg><div class="chart-tooltip" hidden></div>`;
+  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="等级分曲线，纵轴 ${range.min} 至 ${range.max}" data-y-min="${range.min}" data-y-max="${range.max}" data-x-min="${xMin}" data-x-max="${xMax}" data-point-count="${selected.length}">${bands}${axes}${yLabels}${xLabels}<path class="chart-line" d="${path}"/>${peak}<rect id="chart-selection" class="chart-selection" x="${left}" y="${top}" width="0" height="${height}" hidden/><line id="chart-hover-line" x1="0" x2="0" y1="${top}" y2="${H - bottom}" stroke="#1d5665" stroke-dasharray="3 4" hidden/></svg><div class="chart-tooltip" hidden></div>`;
   const svg = container.querySelector('svg'), tooltip = container.querySelector('.chart-tooltip');
   const hover = container.querySelector('#chart-hover-line'), selection = container.querySelector('#chart-selection');
   const position = event => {

@@ -143,7 +143,7 @@ select { appearance: none; color: #4d6256; background: #fff url("data:image/svg+
 .rating-chart { position: relative; margin: 18px 19px 8px; min-height: 270px; }
 .rating-chart > svg { display: block; width: 100%; overflow: visible; font-family: inherit; touch-action: pan-y; cursor: crosshair; }
 .chart-axis { fill: #8f9b92; font-size: 11px; }
-.chart-grid { stroke: #d9e3dc; stroke-width: 1; stroke-dasharray: 3 4; }
+.chart-axis-line { stroke: #8f9b92; stroke-width: 1; }
 .chart-line { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
 .chart-peak-marker { fill: #b79249; stroke: white; stroke-width: 1.2; pointer-events: none; }
 .chart-selection { fill: #16776424; stroke: #16776470; stroke-width: 1; pointer-events: none; }
