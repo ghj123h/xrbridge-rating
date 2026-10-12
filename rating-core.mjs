@@ -1,10 +1,12 @@
+import './player-name.js';
+
 export const DAY = 86400000;
 export const dateNumber = value => Date.parse(`${value}T00:00:00Z`);
 export const dateString = value => new Date(value).toISOString().slice(0, 10);
 export const shiftDay = (value, days) => dateString(dateNumber(value) + days * DAY);
 
 export function formatRating(value, digits = 2) {
-  return Number(value).toLocaleString('zh-CN', { useGrouping: false, minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return globalThis.PlayerName.formatRating(value, digits);
 }
 
 export function boardChangeKey(board, period) {

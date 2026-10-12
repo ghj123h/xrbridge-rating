@@ -1,5 +1,6 @@
 import { dateString, shiftDay, filterPlayers, parseRoute, formatRating, historyMetrics, rankingPage, boardChangeKey, rankingInfo } from './rating-core.mjs';
 import { drawScoreChart } from './score-chart.mjs';
+import './player-name.js';
 
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -16,8 +17,11 @@ function nameColor(player) {
   const item = state.manifest.rating_tier_policy.tiers.find(item => item.code === player.rating_tier);
   return item?.color || '#6b7280';
 }
-function personLink(player, className = 'player-name') {
-  return `<a class="${className}" style="--player-color:${nameColor(player)}" href="#player/${player.id}">${escape(player.nickname || '未命名牌手')}</a>`;
+function personName(player, {link = true, ...options} = {}) {
+  return globalThis.PlayerName.markup(player.nickname || '未命名牌手', {
+    color: nameColor(player), rating: player.display_rating, provisional: player.provisional,
+    profile_url: link ? `#player/${player.id}` : null,
+  }, options);
 }
 function playerAvatar(player, variant = '') {
   const path = typeof player.avatar === 'string' && /^avatars\/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)$/.test(player.avatar) ? player.avatar : null;
@@ -75,7 +79,7 @@ function renderRanking(reset = false) {
   const deltaKey = boardChangeKey(state.board, f.period);
   $('ranking-body').innerHTML = page.items.map((player, i) => `<tr>
     <td><span class="rank ${state.board === 'rating' && player.rank != null && player.rank <= 3 ? 'rank-top' : ''}">${player.provisional ? '—' : state.board === 'rating' ? player.rank : state.page * state.pageSize + i + 1}</span></td>
-    <td><div class="table-player">${playerAvatar(player)}${personLink(player)}</div></td>
+    <td><div class="table-player">${playerAvatar(player)}${personName(player)}</div></td>
     <td class="rating-cell">${formatRating(player.display_rating)}</td>
     <td class="${changeClass(player[deltaKey])}">${signed(player[deltaKey])}</td>
     <td>${number(player.rated_match_count)}</td></tr>`).join('');
@@ -91,7 +95,7 @@ function overviewCard(label, value, note, extra = '') {
   return `<div class="overview-card"><div class="card-label">${label}</div><div class="card-value ${extra}">${value}</div><div class="card-note">${note}</div></div>`;
 }
 function renderOverview(player) {
-  $('player-heading').innerHTML = `${playerAvatar(player, 'avatar')}<div class="profile-title"><div class="profile-name-row"><h1 style="--player-color:${nameColor(player)}">${escape(player.nickname || '未命名牌手')}</h1></div><p>最近参赛 ${escape(player.last_rated_day || '—')}</p></div>`;
+  $('player-heading').innerHTML = `${playerAvatar(player, 'avatar')}<div class="profile-title"><div class="profile-name-row">${personName(player, {link: false, tag: 'h1', className: ''})}</div><p>最近参赛 ${escape(player.last_rated_day || '—')}</p></div>`;
   const { rank, percentile } = rankingInfo(player, state.manifest.stats.mature_players);
   const matureNote = player.provisional ? `累计 ${number(player.rated_board_count)} 副 · RD ${number(player.rating_deviation, 1)}；成熟需 ≥400 副且 RD≤225` : `累计 ${number(player.rated_board_count)} 副有效牌`;
   $('player-overview').innerHTML = [
@@ -133,7 +137,7 @@ function renderMatches(reset = false) {
     const beforeOpponent = opponent && { ...opponent, avatar: match.opponent_avatar ?? opponent.avatar, display_rating: match.opponent_display_rating_before,
       provisional: match.opponent_provisional_before, rating_tier: match.opponent_rating_tier_before };
     const event = state.index.competitions[match.competition_id]?.title || match.competition_id;
-    return `<div class="match-row"><div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div><div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name">${personLink(beforeOpponent)} <span class="opponent-rating">(${formatRating(beforeOpponent.display_rating)})</span></span>` : '<span class="player-name">未命名牌手</span>'}</div><div class="score">${number(match.score, 2)} <span>:</span> ${number(match.opponent_score, 2)}<small>归一化 VP</small></div><div class="board-count">${match.boards} 副</div></div>`;
+    return `<div class="match-row"><div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div><div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name">${personName(beforeOpponent, {showRating: true, ratingClass: 'opponent-rating'})}</span>` : personName({provisional: true}, {link: false})}</div><div class="score">${number(match.score, 2)} <span>:</span> ${number(match.opponent_score, 2)}<small>归一化 VP</small></div><div class="board-count">${match.boards} 副</div></div>`;
   }).join('')}</section>`).join('');
   $('more-matches').hidden = filtered.length <= state.recentLimit;
   $('more-matches').textContent = `再显示 ${Math.min(60, filtered.length - state.recentLimit)} 场`;
