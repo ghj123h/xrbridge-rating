@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -38,10 +39,81 @@ ID = re.compile(r'[a-f0-9]{24}\Z')
 VERSION = re.compile(r'[a-f0-9]{64}\Z')
 AVATAR = re.compile(r'avatars/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)\Z')
 PHONE = re.compile(r'1[3-9][0-9]{9}\Z')
+PUBLIC_PARTS = frozenset(('manifest', 'index', 'history', 'recent', 'avatar'))
+# Keep diagnostics limited to exact public-route messages. SQL, response bodies,
+# arbitrary headers and user data never appear in the CI error message.
+SAFE_ERROR_CODES = {
+    '需要 GitHub 公开产物读取权限': 'PUBLICATION_ACCESS_REQUIRED',
+    '公开产物请求必须固定成功发布版本': 'PUBLICATION_VERSION_REQUIRED',
+    '成功发布版本已变化，请重新生成 GitHub 产物': 'PUBLICATION_VERSION_CHANGED',
+    '评级发布已更新，请刷新后重试': 'PUBLICATION_VERSION_CHANGED',
+    '云端数据库尚未完成迁移': 'DATABASE_NOT_READY',
+    '当前尚无可查询的成功评级发布': 'NO_SUCCESSFUL_PUBLICATION',
+    '评级发布截止点无效': 'PUBLICATION_CUTOFF_INVALID',
+    '评级发布政策不完整': 'PUBLICATION_POLICY_INCOMPLETE',
+    '评级账本与发布截止点不一致': 'LEDGER_CUTOFF_MISMATCH',
+    '公开头像路径与 GitHub 网页版本不兼容': 'AVATAR_PATH_INCOMPATIBLE',
+    '评级账本中的对局坐标无效': 'MATCH_COORDINATES_INVALID',
+    '数据库查询暂时不可用，请稍后重试': 'DATABASE_QUERY_UNAVAILABLE',
+    '需要有效分桶参数': 'BUCKET_INVALID',
+    '分桶参数应为 0–127': 'BUCKET_INVALID',
+    '公开产物种类无效': 'PUBLICATION_PART_INVALID',
+    '公开标识格式无效': 'PUBLIC_ID_INVALID',
+    '该公开牌手没有头像': 'AVATAR_UNAVAILABLE',
+    '云端头像存储尚未配置': 'AVATAR_STORAGE_NOT_CONFIGURED',
+    '公开头像尚未完成迁移': 'AVATAR_NOT_READY',
+}
+SAFE_ERROR_CODE_VALUES = frozenset(SAFE_ERROR_CODES.values()) | {'UNCLASSIFIED_UPSTREAM_ERROR', 'NETWORK_UNAVAILABLE'}
 
 
 class PublicationError(RuntimeError):
     pass
+
+
+class CloudRequestError(PublicationError):
+    def __init__(self, part, bucket, status, error_code):
+        self.part = part if part in PUBLIC_PARTS else 'invalid'
+        self.bucket = bucket if type(bucket) is int and 0 <= bucket < BUCKET_COUNT else None
+        self.http_status = status if type(status) is int and 100 <= status < 600 else None
+        self.safe_error_code = error_code if error_code in SAFE_ERROR_CODE_VALUES else 'UNCLASSIFIED_UPSTREAM_ERROR'
+        label = f'part={self.part}'
+        if self.bucket is not None:
+            label += f' bucket={self.bucket:03d}'
+        super().__init__(f'Cloud public export failed {label} http_status={self.http_status} safe_error_code={self.safe_error_code}')
+
+
+def safe_http_error(error):
+    code = 'UNCLASSIFIED_UPSTREAM_ERROR'
+    try:
+        payload = json.loads(error.read(8192))
+        if isinstance(payload, dict) and isinstance(payload.get('error'), str):
+            code = SAFE_ERROR_CODES.get(payload['error'], code)
+    except (ValueError, OSError, TypeError):
+        pass
+    finally:
+        error.close()
+    return code
+
+
+class ExportProgress:
+    def __init__(self, stage, total):
+        self.stage, self.total, self.completed = stage, total, 0
+        self.started = self.last_report = time.perf_counter()
+        self.emit('export_stage_start')
+
+    def emit(self, event):
+        print(json.dumps({'event': event, 'stage': self.stage, 'completed': self.completed,
+            'total': self.total, 'elapsed_seconds': round(time.perf_counter() - self.started, 3)}), flush=True)
+        self.last_report = time.perf_counter()
+
+    def advance(self):
+        self.completed += 1
+        batch = 256 if self.stage == 'avatars' else 32
+        if self.completed < self.total and (self.completed % batch == 0 or time.perf_counter() - self.last_report >= 30):
+            self.emit('export_stage_progress')
+
+    def finish(self):
+        self.emit('export_stage_complete')
 
 
 def object_fields(value, fields, label):
@@ -130,9 +202,10 @@ class CloudPublicationClient:
                 finite_values(data)
                 return data, actual, None
         except HTTPError as error:
-            raise PublicationError(f'Cloud public export returned HTTP {error.code}') from None
+            code = safe_http_error(error)
+            raise CloudRequestError(part, bucket, error.code, code) from None
         except URLError:
-            raise PublicationError('Cloud public export could not be reached') from None
+            raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise PublicationError('Cloud public export returned invalid JSON') from None
 
@@ -150,10 +223,13 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
     for name in FRONTEND_FILES:
         if not (source / name).is_file():
             raise PublicationError(f'Missing frontend source: {name}')
+    progress = ExportProgress('manifest', 1)
     manifest, version, _ = client.fetch('manifest')
     validate_manifest(manifest)
     if not VERSION.fullmatch(version):
         raise PublicationError('Invalid publication version')
+    progress.advance()
+    progress.finish()
     index = {'players': [], 'aliases': {}, 'competitions': {}}
     bucket_ids = {}
     avatar_owners = {}
@@ -165,6 +241,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
         (staging / '.nojekyll').write_text('', encoding='utf-8')
         (staging / 'avatars').mkdir()
         with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
+            progress = ExportProgress('index_buckets', BUCKET_COUNT)
             def index_bucket(bucket):
                 payload, actual, _ = client.fetch('index', version=version, bucket=bucket)
                 if actual != version:
@@ -195,6 +272,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
                     if identifier in index['competitions'] and index['competitions'][identifier] != event:
                         raise PublicationError('Competition title changed during export')
                     index['competitions'][identifier] = event
+                progress.advance()
             all_ids = {p['id'] for p in index['players']}
             if len(index['players']) != len(all_ids) or len(all_ids) != manifest['stats']['players']:
                 raise PublicationError('Published player count differs from export')
@@ -208,8 +286,10 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
                     raise PublicationError('Mature-player ranks differ from the published tie order')
             index['aliases'] = dict(sorted(index['aliases'].items()))
             index['competitions'] = dict(sorted(index['competitions'].items()))
+            progress.finish()
             recent_count = 0
             recent_boards = []
+            progress = ExportProgress('history_recent_buckets', BUCKET_COUNT * 2)
             def data_bucket(item):
                 part, bucket = item
                 payload, actual, _ = client.fetch(part, version=version, bucket=bucket)
@@ -245,24 +325,35 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
                                 avatar_owners.setdefault(match['opponent_avatar'], match['opponent_id'])
                 payload['players'] = dict(sorted(payload['players'].items()))
                 write_json(staging / f'data/{part}/{bucket:03d}.json.gz', payload, compressed=True)
+                progress.advance()
             if recent_count != manifest['stats']['valid_matches_30d'] * 2 or math.fsum(recent_boards) != manifest['stats']['boards_30d'] * 2:
                 raise PublicationError('Recent ledger totals differ from the published statistics')
+            progress.finish()
             def download_avatar(item):
                 asset, identifier = item
                 payload, actual, path = client.fetch('avatar', version=version, player_id=identifier)
                 if actual != version or path != asset:
                     raise PublicationError('Avatar assignment changed during export')
                 (staging / asset).write_bytes(payload)
-            list(pool.map(download_avatar, avatar_owners.items()))
+            progress = ExportProgress('avatars', len(avatar_owners))
+            for _ in pool.map(download_avatar, avatar_owners.items()):
+                progress.advance()
+            progress.finish()
+        progress = ExportProgress('final_manifest_validation', 1)
         final, actual, _ = client.fetch('manifest', version=version)
         if actual != version or final != manifest:
             raise PublicationError('Successful publication changed during export')
+        progress.advance()
+        progress.finish()
         write_json(staging / 'data/manifest.json', manifest)
         write_json(staging / 'data/index.json.gz', index, compressed=True)
         # The output is installed only after every export and the final version
         # check succeeds. GitHub uploads this directory only when this function
         # returns successfully; a file-copy failure never deploys an artifact.
+        progress = ExportProgress('install_bundle', 1)
         shutil.copytree(staging, output)
+        progress.advance()
+        progress.finish()
     return {'publication_version': version, 'players': len(index['players']), 'avatar_files': len(avatar_owners),
             'recent_matches': recent_count // 2, 'data_files': 2 + BUCKET_COUNT * 2}
 
