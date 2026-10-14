@@ -1,0 +1,51 @@
+name: Publish cloud rating data to GitHub Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 18 * * *' # 02:45 Beijing time; publishes only a successful cloud snapshot.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-rating-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build public bundle from one successful cloud version
+        env:
+          CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
+          GITHUB_PUBLICATION_TOKEN: ${{ secrets.GITHUB_PUBLICATION_TOKEN }}
+          SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
+          PAGES_SOURCE_DIR: ${{ vars.PAGES_SOURCE_DIR || '.' }}
+        run: python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: cloud-pages-output
+          include-hidden-files: true # Retain only the generated bundle's .nojekyll file.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy complete public bundle
+        id: deployment
+        uses: actions/deploy-pages@v5
