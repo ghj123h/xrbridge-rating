@@ -79,6 +79,7 @@ DATABASE_FAILURE_CODES = frozenset((
     'SQLITE_CONSTRAINT_NOTNULL', 'SQLITE_CONSTRAINT_CHECK', 'SQLITE_INTERRUPT', 'SQLITE_ABORT',
     'SQLITE_FULL', 'UNKNOWN',
 ))
+DATABASE_RESOURCE_KINDS = frozenset(('MEMORY_LIMIT', 'CPU_LIMIT', 'UNKNOWN_RESOURCE'))
 
 
 class PublicationError(RuntimeError):
@@ -86,13 +87,15 @@ class PublicationError(RuntimeError):
 
 
 class CloudRequestError(PublicationError):
-    def __init__(self, part, bucket, status, error_code, reason=None, code=None):
+    def __init__(self, part, bucket, status, error_code, reason=None, code=None, resource_kind=None):
         self.part = part if part in PUBLIC_PARTS else 'invalid'
         self.bucket = bucket if type(bucket) is int and 0 <= bucket < BUCKET_COUNT else None
         self.http_status = status if type(status) is int and 100 <= status < 600 else None
         self.safe_error_code = error_code if error_code in SAFE_ERROR_CODE_VALUES else 'UNCLASSIFIED_UPSTREAM_ERROR'
         self.database_reason = reason if isinstance(reason, str) and reason in DATABASE_FAILURE_REASONS else None
         self.database_code = code if isinstance(code, str) and code in DATABASE_FAILURE_CODES else None
+        self.resource_kind = (resource_kind if self.database_reason == 'RESOURCE_LIMIT'
+            and isinstance(resource_kind, str) and resource_kind in DATABASE_RESOURCE_KINDS else None)
         label = f'part={self.part}'
         if self.bucket is not None:
             label += f' bucket={self.bucket:03d}'
@@ -101,12 +104,14 @@ class CloudRequestError(PublicationError):
             message += f' reason={self.database_reason}'
         if self.database_code is not None:
             message += f' code={self.database_code}'
+        if self.resource_kind is not None:
+            message += f' resource_kind={self.resource_kind}'
         super().__init__(message)
 
 
 def safe_http_error(error):
     code = 'UNCLASSIFIED_UPSTREAM_ERROR'
-    reason = database_code = None
+    reason = database_code = resource_kind = None
     try:
         payload = json.loads(error.read(8192))
         if isinstance(payload, dict):
@@ -122,11 +127,14 @@ def safe_http_error(error):
                 candidate = payload.get('code')
                 if isinstance(candidate, str) and candidate in DATABASE_FAILURE_CODES:
                     database_code = candidate
+                candidate = payload.get('resource_kind')
+                if reason == 'RESOURCE_LIMIT' and isinstance(candidate, str) and candidate in DATABASE_RESOURCE_KINDS:
+                    resource_kind = candidate
     except (ValueError, OSError, TypeError):
         pass
     finally:
         error.close()
-    return code, reason, database_code
+    return code, reason, database_code, resource_kind
 
 
 class ExportProgress:
@@ -236,8 +244,8 @@ class CloudPublicationClient:
                 finite_values(data)
                 return data, actual, None
         except HTTPError as error:
-            code, reason, database_code = safe_http_error(error)
-            raise CloudRequestError(part, bucket, error.code, code, reason, database_code) from None
+            code, reason, database_code, resource_kind = safe_http_error(error)
+            raise CloudRequestError(part, bucket, error.code, code, reason, database_code, resource_kind) from None
         except URLError:
             raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -250,7 +258,7 @@ def write_json(path, value, *, compressed=False):
     path.write_bytes(gzip.compress(payload, compresslevel=9, mtime=0) if compressed else payload)
 
 
-def build_bundle(client, source_dir, output_dir, *, workers=4):
+def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
     source, output = Path(source_dir).resolve(), Path(output_dir).resolve()
     if output.exists() or output == source or output in source.parents:
         raise PublicationError('Output must be a new directory, separate from the website sources')
@@ -333,33 +341,37 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
                 if set(payload['players']) != bucket_ids[bucket]:
                     raise PublicationError(f'{part} bucket differs from its published player scope')
                 return part, bucket, payload
-            for part, bucket, payload in pool.map(data_bucket, ((part, bucket) for bucket in range(BUCKET_COUNT) for part in ('history', 'recent'))):
-                for identifier, records in payload['players'].items():
-                    if part == 'history':
-                        object_fields(records, {'points'}, 'Player history')
-                        last = ''
-                        for point in records['points']:
-                            if (not isinstance(point, list) or len(point) != 3 or not isinstance(point[0], str)
-                                    or point[0] <= last or point[0] >= manifest['recent_end_exclusive']):
-                                raise PublicationError('Historical point order or cutoff is invalid')
-                            last = point[0]
-                    else:
-                        if not isinstance(records, list):
-                            raise PublicationError('Recent matches must be a list')
-                        recent_count += len(records)
-                        for match in records:
-                            object_fields(match, MATCH_FIELDS, 'Recent match')
-                            public_id(match['opponent_id']); public_id(match['competition_id']); avatar_path(match['opponent_avatar'])
-                            if (match['opponent_id'] not in all_ids or match['competition_id'] not in index['competitions']
-                                    or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']
-                                    or match['score_unit'] != 'normalized_vp'):
-                                raise PublicationError('Recent match scope or cutoff is invalid')
-                            recent_boards.append(match['boards'])
-                            if match['opponent_avatar']:
-                                avatar_owners.setdefault(match['opponent_avatar'], match['opponent_id'])
-                payload['players'] = dict(sorted(payload['players'].items()))
-                write_json(staging / f'data/{part}/{bucket:03d}.json.gz', payload, compressed=True)
-                progress.advance()
+            # Four concurrent heavy D1 exports hit RESOURCE_LIMIT while the
+            # same requests pass individually. Isolate this phase's concurrency;
+            # index and avatar requests continue using the original pool.
+            with ThreadPoolExecutor(max_workers=max(1, min(data_workers, 4))) as data_pool:
+                for part, bucket, payload in data_pool.map(data_bucket, ((part, bucket) for bucket in range(BUCKET_COUNT) for part in ('history', 'recent'))):
+                    for identifier, records in payload['players'].items():
+                        if part == 'history':
+                            object_fields(records, {'points'}, 'Player history')
+                            last = ''
+                            for point in records['points']:
+                                if (not isinstance(point, list) or len(point) != 3 or not isinstance(point[0], str)
+                                        or point[0] <= last or point[0] >= manifest['recent_end_exclusive']):
+                                    raise PublicationError('Historical point order or cutoff is invalid')
+                                last = point[0]
+                        else:
+                            if not isinstance(records, list):
+                                raise PublicationError('Recent matches must be a list')
+                            recent_count += len(records)
+                            for match in records:
+                                object_fields(match, MATCH_FIELDS, 'Recent match')
+                                public_id(match['opponent_id']); public_id(match['competition_id']); avatar_path(match['opponent_avatar'])
+                                if (match['opponent_id'] not in all_ids or match['competition_id'] not in index['competitions']
+                                        or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']
+                                        or match['score_unit'] != 'normalized_vp'):
+                                    raise PublicationError('Recent match scope or cutoff is invalid')
+                                recent_boards.append(match['boards'])
+                                if match['opponent_avatar']:
+                                    avatar_owners.setdefault(match['opponent_avatar'], match['opponent_id'])
+                    payload['players'] = dict(sorted(payload['players'].items()))
+                    write_json(staging / f'data/{part}/{bucket:03d}.json.gz', payload, compressed=True)
+                    progress.advance()
             if recent_count != manifest['stats']['valid_matches_30d'] * 2 or math.fsum(recent_boards) != manifest['stats']['boards_30d'] * 2:
                 raise PublicationError('Recent ledger totals differ from the published statistics')
             progress.finish()
@@ -398,11 +410,13 @@ def main():
     parser.add_argument('--source-dir', type=Path, default=Path(__file__).resolve().parents[1] / 'site')
     parser.add_argument('--output-dir', type=Path, default=Path('cloud-pages-output'))
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--data-workers', type=int, default=1, help='Concurrent history/recent D1 requests (default: 1).')
     args = parser.parse_args()
     try:
         client = CloudPublicationClient(args.site_url or '', os.environ.get('GITHUB_PUBLICATION_TOKEN'),
             service_token=os.environ.get('SITES_SERVICE_ACCESS_TOKEN'))
-        print(json.dumps(build_bundle(client, args.source_dir, args.output_dir, workers=args.workers), ensure_ascii=False))
+        print(json.dumps(build_bundle(client, args.source_dir, args.output_dir,
+            workers=args.workers, data_workers=args.data_workers), ensure_ascii=False))
     except PublicationError as error:
         parser.exit(1, str(error) + '\n')
     except (OSError, ValueError, TypeError, KeyError):
