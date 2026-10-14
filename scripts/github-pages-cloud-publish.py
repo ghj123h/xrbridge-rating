@@ -64,6 +64,21 @@ SAFE_ERROR_CODES = {
     '公开头像尚未完成迁移': 'AVATAR_NOT_READY',
 }
 SAFE_ERROR_CODE_VALUES = frozenset(SAFE_ERROR_CODES.values()) | {'UNCLASSIFIED_UPSTREAM_ERROR', 'NETWORK_UNAVAILABLE'}
+DATABASE_FAILURE_REASONS = frozenset((
+    'MISSING_TABLE', 'MISSING_COLUMN', 'SQL_SYNTAX', 'BOUND_PARAMETER_LIMIT', 'ROW_SIZE_LIMIT',
+    'COMPOUND_SELECT_LIMIT', 'SQL_SIZE_LIMIT', 'SQL_FUNCTION_ARGUMENT_LIMIT', 'PATTERN_SIZE_LIMIT',
+    'COLUMN_LIMIT', 'QUERY_TIMEOUT', 'QUERY_INTERRUPTED', 'SUBREQUEST_LIMIT', 'RESOURCE_LIMIT',
+    'DATABASE_BUSY', 'AUTHORIZATION', 'TYPE_MISMATCH', 'CONSTRAINT', 'DAILY_ROW_READ_LIMIT',
+    'DAILY_ROW_WRITE_LIMIT', 'ACCOUNT_STORAGE_LIMIT', 'DATABASE_STORAGE_LIMIT', 'DATABASE_RESET',
+    'NETWORK_DISCONNECTED', 'TRANSIENT_REMOTE_NODE', 'UNKNOWN',
+))
+DATABASE_FAILURE_CODES = frozenset((
+    'D1_ERROR', 'D1_EXEC_ERROR', 'D1_TYPE_ERROR', 'D1_COLUMN_NOTFOUND', 'SQLITE_ERROR',
+    'SQLITE_TOOBIG', 'SQLITE_RANGE', 'SQLITE_NOMEM', 'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_AUTH',
+    'SQLITE_PERM', 'SQLITE_CONSTRAINT', 'SQLITE_CONSTRAINT_FOREIGNKEY', 'SQLITE_CONSTRAINT_UNIQUE',
+    'SQLITE_CONSTRAINT_NOTNULL', 'SQLITE_CONSTRAINT_CHECK', 'SQLITE_INTERRUPT', 'SQLITE_ABORT',
+    'SQLITE_FULL', 'UNKNOWN',
+))
 
 
 class PublicationError(RuntimeError):
@@ -71,28 +86,47 @@ class PublicationError(RuntimeError):
 
 
 class CloudRequestError(PublicationError):
-    def __init__(self, part, bucket, status, error_code):
+    def __init__(self, part, bucket, status, error_code, reason=None, code=None):
         self.part = part if part in PUBLIC_PARTS else 'invalid'
         self.bucket = bucket if type(bucket) is int and 0 <= bucket < BUCKET_COUNT else None
         self.http_status = status if type(status) is int and 100 <= status < 600 else None
         self.safe_error_code = error_code if error_code in SAFE_ERROR_CODE_VALUES else 'UNCLASSIFIED_UPSTREAM_ERROR'
+        self.database_reason = reason if isinstance(reason, str) and reason in DATABASE_FAILURE_REASONS else None
+        self.database_code = code if isinstance(code, str) and code in DATABASE_FAILURE_CODES else None
         label = f'part={self.part}'
         if self.bucket is not None:
             label += f' bucket={self.bucket:03d}'
-        super().__init__(f'Cloud public export failed {label} http_status={self.http_status} safe_error_code={self.safe_error_code}')
+        message = f'Cloud public export failed {label} http_status={self.http_status} safe_error_code={self.safe_error_code}'
+        if self.database_reason is not None:
+            message += f' reason={self.database_reason}'
+        if self.database_code is not None:
+            message += f' code={self.database_code}'
+        super().__init__(message)
 
 
 def safe_http_error(error):
     code = 'UNCLASSIFIED_UPSTREAM_ERROR'
+    reason = database_code = None
     try:
         payload = json.loads(error.read(8192))
-        if isinstance(payload, dict) and isinstance(payload.get('error'), str):
-            code = SAFE_ERROR_CODES.get(payload['error'], code)
+        if isinstance(payload, dict):
+            if isinstance(payload.get('error'), str):
+                code = SAFE_ERROR_CODES.get(payload['error'], code)
+            explicit_code = payload.get('error_code')
+            if code == 'UNCLASSIFIED_UPSTREAM_ERROR' and isinstance(explicit_code, str) and explicit_code in SAFE_ERROR_CODE_VALUES:
+                code = explicit_code
+            if code == 'DATABASE_QUERY_UNAVAILABLE':
+                candidate = payload.get('reason')
+                if isinstance(candidate, str) and candidate in DATABASE_FAILURE_REASONS:
+                    reason = candidate
+                candidate = payload.get('code')
+                if isinstance(candidate, str) and candidate in DATABASE_FAILURE_CODES:
+                    database_code = candidate
     except (ValueError, OSError, TypeError):
         pass
     finally:
         error.close()
-    return code
+    return code, reason, database_code
 
 
 class ExportProgress:
@@ -202,8 +236,8 @@ class CloudPublicationClient:
                 finite_values(data)
                 return data, actual, None
         except HTTPError as error:
-            code = safe_http_error(error)
-            raise CloudRequestError(part, bucket, error.code, code) from None
+            code, reason, database_code = safe_http_error(error)
+            raise CloudRequestError(part, bucket, error.code, code, reason, database_code) from None
         except URLError:
             raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
         except (UnicodeDecodeError, json.JSONDecodeError):
