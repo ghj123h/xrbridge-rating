@@ -28,7 +28,7 @@ jobs:
       - name: Build public bundle from one successful cloud version
         env:
           CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
-          GITHUB_PUBLICATION_TOKEN: ${{ secrets.GITHUB_PUBLICATION_TOKEN }}
+          GITHUB_PUBLICATION_TOKEN: ${{ secrets.XR_PUBLICATION_TOKEN }}
           SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
           PAGES_SOURCE_DIR: ${{ vars.PAGES_SOURCE_DIR || '.' }}
         run: python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output
