@@ -252,6 +252,25 @@ class CloudPublicationClient:
             raise PublicationError('Cloud public export returned invalid JSON') from None
 
 
+def fetch_avatar_with_retry(client, *, version, player_id):
+    for attempt in range(3):
+        try:
+            return client.fetch('avatar', version=version, player_id=player_id)
+        except CloudRequestError as error:
+            retryable = (error.part == 'avatar' and error.http_status == 503
+                and error.safe_error_code == 'DATABASE_QUERY_UNAVAILABLE'
+                and error.database_reason == 'NETWORK_DISCONNECTED' and error.database_code == 'D1_ERROR')
+            if not retryable or attempt == 2:
+                raise
+            delay = (0.5, 1.0)[attempt]
+            print(json.dumps({'event': 'avatar_network_retry', 'part': 'avatar',
+                'failed_attempt': attempt + 1, 'next_attempt': attempt + 2, 'total_attempts': 3,
+                'delay_seconds': delay, 'http_status': 503,
+                'safe_error_code': 'DATABASE_QUERY_UNAVAILABLE', 'reason': 'NETWORK_DISCONNECTED',
+                'code': 'D1_ERROR'}), flush=True)
+            time.sleep(delay)
+
+
 def write_json(path, value, *, compressed=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
@@ -377,7 +396,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
             progress.finish()
             def download_avatar(item):
                 asset, identifier = item
-                payload, actual, path = client.fetch('avatar', version=version, player_id=identifier)
+                payload, actual, path = fetch_avatar_with_retry(client, version=version, player_id=identifier)
                 if actual != version or path != asset:
                     raise PublicationError('Avatar assignment changed during export')
                 (staging / asset).write_bytes(payload)
