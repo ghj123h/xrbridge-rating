@@ -228,47 +228,47 @@ class CloudPublicationClient:
         if player_id is not None:
             parameters['id'] = player_id
         request = Request(self.endpoint + '?' + urlencode(parameters), headers=self.headers)
-        try:
-            with urlopen(request, timeout=120) as response:
-                actual = response.headers.get('X-Publication-Version', '')
-                if not VERSION.fullmatch(actual) or version is not None and actual != version:
-                    raise PublicationError('Successful publication changed during export')
-                payload = response.read(32 * 1024 * 1024 + 1)
-                if len(payload) > 32 * 1024 * 1024:
-                    raise PublicationError('Public export response is too large')
-                if part == 'avatar':
-                    return payload, actual, response.headers.get('X-Publication-Asset')
-                if not response.headers.get('Content-Type', '').startswith('application/json'):
-                    raise PublicationError('Cloud endpoint did not return a public JSON export')
-                data = json.loads(payload)
-                finite_values(data)
-                return data, actual, None
-        except HTTPError as error:
-            code, reason, database_code, resource_kind = safe_http_error(error)
-            raise CloudRequestError(part, bucket, error.code, code, reason, database_code, resource_kind) from None
-        except URLError:
-            raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise PublicationError('Cloud public export returned invalid JSON') from None
-
-
-def fetch_avatar_with_retry(client, *, version, player_id):
-    for attempt in range(3):
-        try:
-            return client.fetch('avatar', version=version, player_id=player_id)
-        except CloudRequestError as error:
-            retryable = (error.part == 'avatar' and error.http_status == 503
-                and error.safe_error_code == 'DATABASE_QUERY_UNAVAILABLE'
-                and error.database_reason == 'NETWORK_DISCONNECTED' and error.database_code == 'D1_ERROR')
-            if not retryable or attempt == 2:
-                raise
-            delay = (0.5, 1.0)[attempt]
-            print(json.dumps({'event': 'avatar_network_retry', 'part': 'avatar',
-                'failed_attempt': attempt + 1, 'next_attempt': attempt + 2, 'total_attempts': 3,
-                'delay_seconds': delay, 'http_status': 503,
-                'safe_error_code': 'DATABASE_QUERY_UNAVAILABLE', 'reason': 'NETWORK_DISCONNECTED',
-                'code': 'D1_ERROR'}), flush=True)
-            time.sleep(delay)
+        for attempt in range(3):
+            try:
+                with urlopen(request, timeout=120) as response:
+                    actual = response.headers.get('X-Publication-Version', '')
+                    if not VERSION.fullmatch(actual) or version is not None and actual != version:
+                        raise PublicationError('Successful publication changed during export')
+                    payload = response.read(32 * 1024 * 1024 + 1)
+                    if len(payload) > 32 * 1024 * 1024:
+                        raise PublicationError('Public export response is too large')
+                    if part == 'avatar':
+                        return payload, actual, response.headers.get('X-Publication-Asset')
+                    if not response.headers.get('Content-Type', '').startswith('application/json'):
+                        raise PublicationError('Cloud endpoint did not return a public JSON export')
+                    data = json.loads(payload)
+                    finite_values(data)
+                    return data, actual, None
+            except HTTPError as error:
+                code, reason, database_code, resource_kind = safe_http_error(error)
+                failure = CloudRequestError(part, bucket, error.code, code, reason, database_code, resource_kind)
+                retryable = (failure.http_status == 503 and (
+                    failure.safe_error_code == 'UNCLASSIFIED_UPSTREAM_ERROR' or
+                    failure.safe_error_code == 'DATABASE_QUERY_UNAVAILABLE' and
+                    failure.database_code == 'D1_ERROR' and
+                    failure.database_reason in ('NETWORK_DISCONNECTED', 'DATABASE_BUSY')))
+                if not retryable or attempt == 2:
+                    raise failure from None
+                delay = (0.5, 1.0)[attempt]
+                event = {'event': 'public_export_retry', 'part': failure.part,
+                    'failed_attempt': attempt + 1, 'next_attempt': attempt + 2, 'total_attempts': 3,
+                    'delay_seconds': delay, 'http_status': failure.http_status,
+                    'safe_error_code': failure.safe_error_code}
+                for key, value in (('bucket', failure.bucket), ('reason', failure.database_reason),
+                                   ('code', failure.database_code), ('resource_kind', failure.resource_kind)):
+                    if value is not None:
+                        event[key] = value
+                print(json.dumps(event), flush=True)
+                time.sleep(delay)
+            except URLError:
+                raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise PublicationError('Cloud public export returned invalid JSON') from None
 
 
 def write_json(path, value, *, compressed=False):
@@ -396,7 +396,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
             progress.finish()
             def download_avatar(item):
                 asset, identifier = item
-                payload, actual, path = fetch_avatar_with_retry(client, version=version, player_id=identifier)
+                payload, actual, path = client.fetch('avatar', version=version, player_id=identifier)
                 if actual != version or path != asset:
                     raise PublicationError('Avatar assignment changed during export')
                 (staging / asset).write_bytes(payload)
