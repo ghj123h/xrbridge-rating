@@ -251,7 +251,7 @@ class CloudPublicationClient:
                     failure.safe_error_code == 'UNCLASSIFIED_UPSTREAM_ERROR' or
                     failure.safe_error_code == 'DATABASE_QUERY_UNAVAILABLE' and
                     ((failure.database_code == 'D1_ERROR' and
-                      failure.database_reason in ('NETWORK_DISCONNECTED', 'DATABASE_BUSY')) or
+                      failure.database_reason in ('NETWORK_DISCONNECTED', 'DATABASE_BUSY', 'UNKNOWN')) or
                      (failure.database_reason, failure.database_code) == ('UNKNOWN', 'UNKNOWN'))))
                 if not retryable or attempt == 2:
                     raise failure from None
