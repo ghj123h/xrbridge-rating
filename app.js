@@ -94,15 +94,16 @@ function renderRanking(reset = false) {
 function overviewCard(label, value, note, extra = '') {
   return `<div class="overview-card"><div class="card-label">${label}</div><div class="card-value ${extra}">${value}</div><div class="card-note">${note}</div></div>`;
 }
-function renderOverview(player) {
+function renderOverview(player, history = null) {
   $('player-heading').innerHTML = `${playerAvatar(player, 'avatar')}<div class="profile-title"><div class="profile-name-row">${personName(player, {link: false, tag: 'h1', className: ''})}</div><p>最近参赛 ${escape(player.last_rated_day || '—')}</p></div>`;
   const { rank, percentile } = rankingInfo(player, state.manifest.stats.mature_players);
   const matureNote = player.provisional ? `累计 ${number(player.rated_board_count)} 副 · RD ${number(player.rating_deviation, 1)}；成熟需 ≥400 副且 RD≤225` : `累计 ${number(player.rated_board_count)} 副有效牌`;
+  const peak = history?.points.reduce((best, point) => !best || point[1] > best[1] ? point : best, history.points[0]);
   $('player-overview').innerHTML = [
     overviewCard('等级分', formatRating(player.display_rating), `最近更新 ${escape(player.last_rated_day || '—')}`),
     overviewCard('全站排名', rank == null ? '#-' : `#${number(rank)}`, percentile == null ? '暂定牌手暂不参与排名' : `超过 ${number(percentile, 2)}% 的成熟牌手`),
     overviewCard('近 30 日变化', signed(player.delta_30d), `近 7 日 ${signed(player.delta_7d)}`, changeClass(player.delta_30d)),
-    overviewCard('历史最高等级分', formatRating(player.peak_display_rating), `当前算法 · 覆盖自 ${state.manifest.history_start}`),
+    overviewCard('历史最高等级分', formatRating(player.peak_display_rating), escape(peak?.[0] || '—')),
     overviewCard('有效计分对局', number(player.rated_match_count), matureNote),
     overviewCard('30 日场均 VP', player.avg_vp_30d == null ? '—' : number(player.avg_vp_30d, 2), `近 30 日 ${number(player.recent_match_count)} 场 · 归一化 20 VP`),
   ].join('');
@@ -174,6 +175,7 @@ async function route() {
     if (sequence !== state.routeSequence) return;
     if (!history) throw new Error('该牌手的历史分片缺少记录。');
     currentHistory = history; currentRecent = recent || [];
+    renderOverview(player, history);
     renderCurve(); renderMatches();
   } catch (error) { if (sequence === state.routeSequence) showError(error); }
 }
