@@ -383,9 +383,15 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
                                 object_fields(match, MATCH_FIELDS, 'Recent match')
                                 public_id(match['opponent_id']); public_id(match['competition_id']); avatar_path(match['opponent_avatar'])
                                 if (match['opponent_id'] not in all_ids or match['competition_id'] not in index['competitions']
-                                        or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']
-                                        or match['score_unit'] != 'normalized_vp'):
+                                        or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']):
                                     raise PublicationError('Recent match scope or cutoff is invalid')
+                                unit = match['score_unit']
+                                scores = (match['score'], match['opponent_score'])
+                                if (unit not in ('normalized_vp', 'imp')
+                                        or any(type(score) not in (int, float) or not math.isfinite(score) for score in scores)
+                                        or unit == 'normalized_vp' and any(not 0 <= score <= 20 for score in scores)
+                                        or unit == 'imp' and any(score != int(score) for score in scores)):
+                                    raise PublicationError('Recent match score or unit is invalid')
                                 recent_boards.append(match['boards'])
                                 if match['opponent_avatar']:
                                     avatar_owners.setdefault(match['opponent_avatar'], match['opponent_id'])
