@@ -1,4 +1,4 @@
-import { dateString, shiftDay, filterPlayers, parseRoute, formatRating, historyMetrics, rankingPage, boardChangeKey, rankingInfo } from './rating-core.mjs';
+import { dateString, shiftDay, filterPlayers, parseRoute, formatRating, matchScoreDisplay, historyMetrics, rankingPage, boardChangeKey, rankingInfo } from './rating-core.mjs';
 import { drawScoreChart } from './score-chart.mjs';
 import './player-name.js';
 
@@ -138,14 +138,15 @@ function renderMatches(reset = false) {
     const beforeOpponent = opponent && { ...opponent, avatar: match.opponent_avatar ?? opponent.avatar, display_rating: match.opponent_display_rating_before,
       provisional: match.opponent_provisional_before, rating_tier: match.opponent_rating_tier_before };
     const event = state.index.competitions[match.competition_id]?.title || match.competition_id;
-    return `<div class="match-row"><div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div><div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name">${personName(beforeOpponent, {showRating: true, ratingClass: 'opponent-rating'})}</span>` : personName({provisional: true}, {link: false})}</div><div class="score">${number(match.score, 2)} <span>:</span> ${number(match.opponent_score, 2)}<small>归一化 VP</small></div><div class="board-count">${match.boards} 副</div></div>`;
+    const score = matchScoreDisplay(match);
+    return `<div class="match-row"><div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div><div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name">${personName(beforeOpponent, {showRating: true, ratingClass: 'opponent-rating'})}</span>` : personName({provisional: true}, {link: false})}</div><div class="score">${score.score} <span>:</span> ${score.opponentScore}<small>${score.label}</small></div><div class="board-count">${match.boards} 副</div></div>`;
   }).join('')}</section>`).join('');
   $('more-matches').hidden = filtered.length <= state.recentLimit;
   $('more-matches').textContent = `再显示 ${Math.min(60, filtered.length - state.recentLimit)} 场`;
 }
 function renderRules() {
   $('rules-content').innerHTML = `<div class="rule-card"><h2>哪些比赛计入等级分</h2><p>仅计入已确认由新睿主办的官方赛事，以及在发布截止时间之前结束、已完整校验的轮次。赛事整体仍在进行时，已结束的完整轮次也可以计入。</p><p>轮空、无效账号、弃权和异常无效比分不进入计分。近 30 日记录展示所有已纳入本次计分的有效对局。</p></div>
-  <div class="rule-grid"><div class="rule-card"><h2>等级分与涨跌</h2><p>新牌手的等级分从 0 起步，前六场有效对局逐步释放初始分数。个人概览、历史曲线和每日变化保留这一过程；上分榜和下分榜整日排除日初仍有隐藏分的计分日，即使当天完成了第六场，也从下一计分日开始累计。</p><p>成熟牌手的用户名颜色表示分档；暂定牌手使用黑色。</p></div><div class="rule-card"><h2>每日结算</h2><p>同一天的对局在日末统一汇总。比赛详情按日列出等级分总变化；每场比分显示为计分使用的归一化 20 VP。对手的等级分、暂定状态和颜色均取该场计分前的冻结状态，同一天采用相同的日初状态。</p><p>昨日、近 7 日、近 30 日均按北京时间自然日计算，以当前发布截止时间为准。表现分来自当日结算，按对手分数与对局权重计算。</p></div></div>
+  <div class="rule-grid"><div class="rule-card"><h2>等级分与涨跌</h2><p>新牌手的等级分从 0 起步，前六场有效对局逐步释放初始分数。个人概览、历史曲线和每日变化保留这一过程；上分榜和下分榜整日排除日初仍有隐藏分的计分日，即使当天完成了第六场，也从下一计分日开始累计。</p><p>成熟牌手的用户名颜色表示分档；暂定牌手使用黑色。</p></div><div class="rule-card"><h2>每日结算</h2><p>同一天的对局在日末统一汇总。比赛详情按日列出等级分总变化；个人淘汰赛比分展示原始 IMP，其余对局展示归一化 20 VP。评级和场均 VP 均使用归一化 VP。对手的等级分、暂定状态和颜色均取该场计分前的冻结状态，同一天采用相同的日初状态。</p><p>昨日、近 7 日、近 30 日均按北京时间自然日计算，以当前发布截止时间为准。表现分来自当日结算，按对手分数与对局权重计算。</p></div></div>
   <div class="rule-card"><h2>暂定与成熟</h2><p>所有牌手最初为暂定状态。累计至少 400 副有效牌，且最后有效计分时 RD≤225，表示达到当前可信度门槛，成为成熟牌手。六场初始分数释放完成与计分成熟是两个独立条件。</p><p>成熟状态只在有有效对局的计分日重算。长期未参赛会使 RD 回升，恢复参赛后若日末 RD 仍高于 225，可重新变为暂定；没有新有效对局时保留最后计分状态。</p><p>曲线背景按分数区间划分，纵轴随当前查看范围调整。可拖动框选横轴放大，再点击“恢复范围”返回。</p></div>
   <div class="rule-grid"><div class="rule-card"><h2>排名与筛选</h2><p>仅成熟牌手参与排名，按等级分降序排列，分数相同时沿用固定次序。暂定牌手可出现在排行榜中，名次显示为“—”；个人页显示“#-”，不计算分位数。成熟牌手的全站排名与分位数均以全站成熟牌手为统计范围。</p><p>排行榜筛选后保留全站成熟牌手排名，支持翻页和跳页；上分榜和下分榜仅显示符合所选条件的成熟牌手前 30 名。</p><p>活跃牌手指近 30 日至少有一场有效计分对局的人。场均 VP 为近 30 日有效对局归一化 VP 的算术平均。</p></div><div class="rule-card"><h2>数据覆盖与更新</h2><p>当前历史覆盖 ${state.manifest.history_start} 至 ${state.manifest.history_end}。数据排他截止点：${dateTime(state.manifest.cutoff)}（北京时间）。最后成功发布：${dateTime(state.manifest.generated_at)}。</p><p>历史曲线与最高分使用当前算法重算的结果。比分修订或算法调整可能改变历史；采集或计分未通过校验时，网页保留上一份成功发布的数据。</p><p>算法 ${escape(state.manifest.algorithm)}</p></div></div>`;
 }
