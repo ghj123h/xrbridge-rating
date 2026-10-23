@@ -9,6 +9,16 @@ export function formatRating(value, digits = 2) {
   return globalThis.PlayerName.formatRating(value, digits);
 }
 
+export function matchScoreDisplay(match) {
+  const isImp = match.score_unit === 'imp';
+  const digits = isImp ? 0 : 2;
+  const format = value => value == null ? '—' : Number(value).toLocaleString('zh-CN', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
+  return { score: format(match.score), opponentScore: format(match.opponent_score),
+    label: isImp ? 'IMP' : '归一化 VP' };
+}
+
 export function boardChangeKey(board, period) {
   return `${board === 'gainers' || board === 'losers' ? 'gain' : 'delta'}_${period}d`;
 }
