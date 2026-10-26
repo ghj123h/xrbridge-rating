@@ -355,7 +355,9 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
                     raise PublicationError('Successful publication changed during export')
                 object_fields(payload, {'players', 'aliases', 'competitions'}, 'Index bucket')
                 return bucket, payload
-            for bucket, payload in pool.map(index_bucket, range(BUCKET_COUNT)):
+            # Index exports also query D1; run them serially to avoid database
+            # contention. The existing worker pool remains for avatar downloads.
+            for bucket, payload in map(index_bucket, range(BUCKET_COUNT)):
                 ids = set()
                 for player in payload['players']:
                     object_fields(player, PLAYER_FIELDS, 'Public player')
@@ -423,7 +425,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
                 return part, bucket, payload
             # Four concurrent heavy D1 exports hit RESOURCE_LIMIT while the
             # same requests pass individually. Isolate this phase's concurrency;
-            # index and avatar requests continue using the original pool.
+            # avatar requests continue using the original pool.
             with ThreadPoolExecutor(max_workers=max(1, min(data_workers, 4))) as data_pool:
                 for part, bucket, payload in data_pool.map(data_bucket, ((part, bucket) for bucket in range(BUCKET_COUNT) for part in ('history', 'recent'))):
                     for identifier, records in payload['players'].items():
