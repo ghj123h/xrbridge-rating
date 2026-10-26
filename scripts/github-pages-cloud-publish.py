@@ -1,4 +1,4 @@
-"""Build the existing GitHub Pages website from the cloud's read-only public export.
+"""Download and verify a complete, immutable cloud release for GitHub Pages.
 
 The private Sites website queries its database directly. These v3 files are only
 the compatibility bundle for GitHub Pages; no local database or capture is read.
@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import gzip
+import hashlib
+import io
 import json
 import math
 import os
@@ -16,10 +18,11 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import tarfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 BUCKET_COUNT = 128
 FRONTEND_FILES = ('index.html', 'app.js', 'player-name.js', 'rating-core.mjs', 'score-chart.mjs', 'styles.css')
@@ -39,7 +42,9 @@ ID = re.compile(r'[a-f0-9]{24}\Z')
 VERSION = re.compile(r'[a-f0-9]{64}\Z')
 AVATAR = re.compile(r'avatars/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)\Z')
 PHONE = re.compile(r'1[3-9][0-9]{9}\Z')
-PUBLIC_PARTS = frozenset(('manifest', 'index', 'history', 'recent', 'avatar'))
+PUBLIC_PARTS = frozenset(('release', 'package'))
+PACKAGE_NAME = re.compile(r'(?:metadata|data-\d{3}|avatars-\d{5,})\.tar\Z')
+MAX_PACKAGE = 16 * 1024 * 1024
 # Keep diagnostics limited to exact public-route messages. SQL, response bodies,
 # arbitrary headers and user data never appear in the CI error message.
 SAFE_ERROR_CODES = {
@@ -210,6 +215,68 @@ def validate_manifest(value):
     finite_values(value)
 
 
+def validate_package(package):
+    object_fields(package, {'name', 'size', 'sha256', 'files'}, 'Release package')
+    if (not isinstance(package['name'], str) or not PACKAGE_NAME.fullmatch(package['name'])
+            or type(package['size']) is not int or not 1024 <= package['size'] <= MAX_PACKAGE
+            or not isinstance(package['sha256'], str) or not VERSION.fullmatch(package['sha256'])
+            or not isinstance(package['files'], list) or not package['files']):
+        raise PublicationError('Invalid release package metadata')
+    paths = set()
+    for item in package['files']:
+        object_fields(item, {'path', 'size', 'sha256'}, 'Release file')
+        if (not isinstance(item['path'], str) or item['path'] in paths
+                or type(item['size']) is not int or not 0 <= item['size'] <= MAX_PACKAGE
+                or not isinstance(item['sha256'], str) or not VERSION.fullmatch(item['sha256'])):
+            raise PublicationError('Invalid or duplicate release file metadata')
+        paths.add(item['path'])
+    name = package['name']
+    if name == 'metadata.tar':
+        expected = {'data/manifest.json', 'data/index.json.gz'}
+    elif name.startswith('data-'):
+        bucket = int(name[5:8])
+        if bucket >= BUCKET_COUNT:
+            raise PublicationError('Invalid release data bucket')
+        expected = {f'data/{part}/{bucket:03d}.json.gz' for part in ('history', 'recent')}
+    else:
+        if len(paths) > 32 or any(not AVATAR.fullmatch(path) for path in paths):
+            raise PublicationError('Invalid release avatar package scope')
+        expected = paths
+    if paths != expected:
+        raise PublicationError('Release package has an incomplete or invalid file scope')
+
+
+def validate_release(release, expected_version=None):
+    object_fields(release, {'schema_version', 'publication_version', 'manifest', 'packages',
+                           'file_count', 'avatar_files', 'recent_matches'}, 'Release')
+    version = release['publication_version']
+    if (release['schema_version'] != 'xinrui-pages-release-v1' or not isinstance(version, str)
+            or not VERSION.fullmatch(version) or expected_version is not None and version != expected_version):
+        raise PublicationError('Invalid or changed release publication version')
+    validate_manifest(release['manifest'])
+    if (not isinstance(release['packages'], list)
+            or any(type(release[key]) is not int or release[key] < 0
+                   for key in ('file_count', 'avatar_files', 'recent_matches'))):
+        raise PublicationError('Invalid release counts')
+    names, paths = set(), set()
+    for package in release['packages']:
+        validate_package(package)
+        if package['name'] in names:
+            raise PublicationError('Duplicate release package')
+        names.add(package['name'])
+        for item in package['files']:
+            if item['path'] in paths:
+                raise PublicationError('Duplicate release file')
+            paths.add(item['path'])
+    required = {'metadata.tar'} | {f'data-{bucket:03d}.tar' for bucket in range(BUCKET_COUNT)}
+    if (not required <= names or len(paths) != release['file_count']
+            or len([path for path in paths if AVATAR.fullmatch(path)]) != release['avatar_files']
+            or release['file_count'] != 258 + release['avatar_files']
+            or release['recent_matches'] != release['manifest']['stats']['valid_matches_30d']):
+        raise PublicationError('Release package set or counts are incomplete')
+    return release
+
+
 class CloudPublicationClient:
     def __init__(self, site_url, token, *, service_token=None):
         parsed = urlparse(site_url)
@@ -219,41 +286,41 @@ class CloudPublicationClient:
         if not token:
             raise PublicationError('GITHUB_PUBLICATION_TOKEN is required')
         self.endpoint = site_url.rstrip('/') + '/api/admin/github-publication'
-        self.player_endpoint = site_url.rstrip('/') + '/api/players/'
-        self.player_opener = build_opener(NoRedirect())
+        self.opener = build_opener(NoRedirect())
         self.headers = {'X-Publication-Authorization': 'Bearer ' + token}
         # Platform private-Site access is separate from the application read-only token.
         if service_token:
             self.headers['OAI-Sites-Authorization'] = 'Bearer ' + service_token
 
-    def fetch(self, part, *, version=None, bucket=None, player_id=None):
+    def _fetch(self, part, *, version=None, name=None, maximum=32 * 1024 * 1024):
+        if part not in PUBLIC_PARTS:
+            raise PublicationError('Only ready release downloads are supported')
         parameters = {'part': part}
         if version is not None:
             parameters['version'] = version
-        if bucket is not None:
-            parameters['bucket'] = bucket
-        if player_id is not None:
-            parameters['id'] = player_id
+        if name is not None:
+            parameters['name'] = name
         request = Request(self.endpoint + '?' + urlencode(parameters), headers=self.headers)
         for attempt in range(3):
             try:
-                with urlopen(request, timeout=120) as response:
+                with self.opener.open(request, timeout=120) as response:
                     actual = response.headers.get('X-Publication-Version', '')
                     if not VERSION.fullmatch(actual) or version is not None and actual != version:
                         raise PublicationError('Successful publication changed during export')
-                    payload = response.read(32 * 1024 * 1024 + 1)
-                    if len(payload) > 32 * 1024 * 1024:
+                    expected_type = 'application/x-tar' if part == 'package' else 'application/json'
+                    if response.headers.get('Content-Type', '').split(';', 1)[0].lower() != expected_type:
+                        raise PublicationError('Cloud endpoint returned an incompatible release content type')
+                    payload = response.read(maximum + 1)
+                    if len(payload) > maximum:
                         raise PublicationError('Public export response is too large')
-                    if part == 'avatar':
-                        return payload, actual, response.headers.get('X-Publication-Asset')
-                    if not response.headers.get('Content-Type', '').startswith('application/json'):
-                        raise PublicationError('Cloud endpoint did not return a public JSON export')
+                    if part == 'package':
+                        return payload, actual
                     data = json.loads(payload)
                     finite_values(data)
-                    return data, actual, None
+                    return data, actual
             except HTTPError as error:
                 code, reason, database_code, resource_kind = safe_http_error(error)
-                failure = CloudRequestError(part, bucket, error.code, code, reason, database_code, resource_kind)
+                failure = CloudRequestError(part, None, error.code, code, reason, database_code, resource_kind)
                 retryable = (failure.http_status == 503 and (
                     failure.safe_error_code == 'UNCLASSIFIED_UPSTREAM_ERROR' or
                     failure.safe_error_code == 'DATABASE_QUERY_UNAVAILABLE' and
@@ -274,222 +341,200 @@ class CloudPublicationClient:
                 print(json.dumps(event), flush=True)
                 time.sleep(delay)
             except URLError:
-                raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
+                raise CloudRequestError(part, None, None, 'NETWORK_UNAVAILABLE') from None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 raise PublicationError('Cloud public export returned invalid JSON') from None
 
-    def fetch_player_history(self, player_id, *, version):
-        public_id(player_id)
+    def fetch_release(self, *, version=None):
+        if version is not None and (not isinstance(version, str) or not VERSION.fullmatch(version)):
+            raise PublicationError('Invalid publication version')
+        release, actual = self._fetch('release', version=version)
+        return validate_release(release, expected_version=actual)
+
+    def fetch_package(self, package, *, version):
+        validate_package(package)
         if not isinstance(version, str) or not VERSION.fullmatch(version):
             raise PublicationError('Invalid publication version')
-        headers = {}
-        if 'OAI-Sites-Authorization' in self.headers:
-            headers['OAI-Sites-Authorization'] = self.headers['OAI-Sites-Authorization']
-        request = Request(self.player_endpoint + player_id + '/history', headers=headers)
-        try:
-            with self.player_opener.open(request, timeout=120) as response:
-                if not response.headers.get('Content-Type', '').startswith('application/json'):
-                    raise PublicationError('Cloud endpoint did not return a public JSON history')
-                payload = response.read(32 * 1024 * 1024 + 1)
-                if len(payload) > 32 * 1024 * 1024:
-                    raise PublicationError('Public history response is too large')
-                data = json.loads(payload)
-            object_fields(data, {'id', 'points', 'publication_version'}, 'Public player history')
-            if data['id'] != player_id or data['publication_version'] != version:
-                raise PublicationError('Successful publication or player changed during history export')
-            if not isinstance(data['points'], list):
-                raise PublicationError('Player history points must be a list')
-            finite_values(data['points'])
-            for point in data['points']:
-                if (not isinstance(point, list) or len(point) != 3
-                        or type(point[1]) not in (int, float)
-                        or point[2] is not None and type(point[2]) not in (int, float)):
-                    raise PublicationError('Player history point format is invalid')
-            return {'points': data['points']}, data['publication_version'], None
-        except HTTPError as error:
-            code, reason, database_code, resource_kind = safe_http_error(error)
-            raise CloudRequestError('history', int(player_id, 16) % BUCKET_COUNT,
-                error.code, code, reason, database_code, resource_kind) from None
-        except URLError:
-            raise CloudRequestError('history', int(player_id, 16) % BUCKET_COUNT,
-                None, 'NETWORK_UNAVAILABLE') from None
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise PublicationError('Cloud public history returned invalid JSON') from None
+        payload, _ = self._fetch('package', version=version, name=package['name'], maximum=package['size'])
+        return payload
 
 
-def write_json(path, value, *, compressed=False):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
-    path.write_bytes(gzip.compress(payload, compresslevel=9, mtime=0) if compressed else payload)
+def unpack_package(payload, package, staging, written):
+    if (not isinstance(payload, bytes) or len(payload) != package['size']
+            or hashlib.sha256(payload).hexdigest() != package['sha256']):
+        raise PublicationError('Release package size or SHA-256 differs from its manifest')
+    expected = {item['path']: item for item in package['files']}
+    found, offset = set(), 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(payload), mode='r:') as archive:
+            for member in archive:
+                if (member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or member.pax_headers
+                        or member.linkname or member.offset != offset
+                        or payload[member.offset + 257:member.offset + 263] != b'ustar\0'
+                        or member.name not in expected or member.name in found or member.name in written):
+                    raise PublicationError('Release tar contains an invalid, linked or duplicate file')
+                item = expected[member.name]
+                if member.size != item['size']:
+                    raise PublicationError('Release file size differs from its manifest')
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise PublicationError('Release file body is missing')
+                with extracted:
+                    data = extracted.read(item['size'] + 1)
+                if len(data) != item['size'] or hashlib.sha256(data).hexdigest() != item['sha256']:
+                    raise PublicationError('Release file SHA-256 differs from its manifest')
+                destination = staging / member.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                found.add(member.name); written.add(member.name)
+                offset = member.offset_data + ((member.size + 511) // 512) * 512
+        if (found != set(expected) or len(payload) - offset < 1024
+                or len(payload) % 512 or any(payload[offset:])):
+            raise PublicationError('Release tar file set or ending is incomplete')
+    except (tarfile.TarError, EOFError, OSError):
+        raise PublicationError('Release tar could not be read completely') from None
 
 
-def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
+def read_public_json(path, *, compressed=False):
+    try:
+        opener = gzip.open if compressed else open
+        with opener(path, 'rb') as stream:
+            payload = stream.read(32 * 1024 * 1024 + 1)
+        if len(payload) > 32 * 1024 * 1024:
+            raise PublicationError('Public JSON file is too large')
+        value = json.loads(payload)
+        finite_values(value)
+        return value
+    except (OSError, EOFError, UnicodeError, json.JSONDecodeError):
+        raise PublicationError('Release contains an unreadable public JSON file') from None
+
+
+def validate_downloaded_bundle(staging, release):
+    manifest = read_public_json(staging / 'data/manifest.json')
+    validate_manifest(manifest)
+    if manifest != release['manifest']:
+        raise PublicationError('Downloaded manifest differs from the ready release')
+    index = read_public_json(staging / 'data/index.json.gz', compressed=True)
+    object_fields(index, {'players', 'aliases', 'competitions'}, 'Public index')
+    if (not isinstance(index['players'], list) or not isinstance(index['aliases'], dict)
+            or not isinstance(index['competitions'], dict)):
+        raise PublicationError('Public index fields have incompatible types')
+    bucket_ids = {bucket: set() for bucket in range(BUCKET_COUNT)}
+    avatars, all_ids = set(), set()
+    for player in index['players']:
+        object_fields(player, PLAYER_FIELDS, 'Public player')
+        public_id(player['id']); public_name(player['nickname']); avatar_path(player['avatar'])
+        bucket = int(player['id'], 16) % BUCKET_COUNT
+        if (type(player['bucket']) is not int or player['bucket'] != bucket or player['id'] in all_ids
+                or type(player['display_rating']) not in (int, float) or type(player['provisional']) is not bool):
+            raise PublicationError('Public player bucket scope or ranking data is inconsistent')
+        all_ids.add(player['id']); bucket_ids[bucket].add(player['id'])
+        if player['avatar']:
+            avatars.add(player['avatar'])
+    if len(all_ids) != manifest['stats']['players']:
+        raise PublicationError('Published player count differs from the release')
+    expected_order = sorted(index['players'], key=lambda player: (-player['display_rating'], player['id']))
+    if [player['id'] for player in index['players']] != [player['id'] for player in expected_order]:
+        raise PublicationError('Public player ranking order is invalid')
+    rank = 0
+    for player in index['players']:
+        if not player['provisional']:
+            rank += 1
+        if player['rank'] != (None if player['provisional'] else rank):
+            raise PublicationError('Mature-player ranks differ from the published tie order')
+    for identifier, names in index['aliases'].items():
+        if identifier not in all_ids or not isinstance(names, list):
+            raise PublicationError('Alias scope differs from the published players')
+        for name in names:
+            public_name(name)
+    for identifier, event in index['competitions'].items():
+        public_id(identifier); object_fields(event, {'title'}, 'Competition')
+        if not isinstance(event['title'], str):
+            raise PublicationError('Invalid public competition title')
+    recent_count, recent_boards = 0, []
+    for bucket in range(BUCKET_COUNT):
+        for part in ('history', 'recent'):
+            payload = read_public_json(staging / f'data/{part}/{bucket:03d}.json.gz', compressed=True)
+            object_fields(payload, {'players'}, f'{part} bucket')
+            if not isinstance(payload['players'], dict) or set(payload['players']) != bucket_ids[bucket]:
+                raise PublicationError(f'{part} bucket differs from its published player scope')
+            for records in payload['players'].values():
+                if part == 'history':
+                    object_fields(records, {'points'}, 'Player history')
+                    if not isinstance(records['points'], list):
+                        raise PublicationError('Player history points must be a list')
+                    last = ''
+                    for point in records['points']:
+                        if (not isinstance(point, list) or len(point) != 3 or not isinstance(point[0], str)
+                                or point[0] <= last or point[0] >= manifest['recent_end_exclusive']
+                                or type(point[1]) not in (int, float)
+                                or point[2] is not None and type(point[2]) not in (int, float)):
+                            raise PublicationError('Historical point format, order or cutoff is invalid')
+                        last = point[0]
+                else:
+                    if not isinstance(records, list):
+                        raise PublicationError('Recent matches must be a list')
+                    recent_count += len(records)
+                    for match in records:
+                        object_fields(match, MATCH_FIELDS, 'Recent match')
+                        public_id(match['opponent_id']); public_id(match['competition_id']); avatar_path(match['opponent_avatar'])
+                        if (match['opponent_id'] not in all_ids or match['competition_id'] not in index['competitions']
+                                or not isinstance(match['day'], str)
+                                or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']):
+                            raise PublicationError('Recent match scope or cutoff is invalid')
+                        unit, scores = match['score_unit'], (match['score'], match['opponent_score'])
+                        if (unit not in ('normalized_vp', 'imp')
+                                or any(type(score) not in (int, float) or not math.isfinite(score) for score in scores)
+                                or unit == 'normalized_vp' and any(not 0 <= score <= 20 for score in scores)
+                                or unit == 'imp' and any(score != int(score) for score in scores)):
+                            raise PublicationError('Recent match score or unit is invalid')
+                        recent_boards.append(match['boards'])
+                        if match['opponent_avatar']:
+                            avatars.add(match['opponent_avatar'])
+    if (recent_count != manifest['stats']['valid_matches_30d'] * 2
+            or math.fsum(recent_boards) != manifest['stats']['boards_30d'] * 2
+            or recent_count != release['recent_matches'] * 2):
+        raise PublicationError('Recent ledger totals differ from the published statistics')
+    delivered_avatars = {item['path'] for package in release['packages'] for item in package['files']
+                         if AVATAR.fullmatch(item['path'])}
+    if delivered_avatars != avatars:
+        raise PublicationError('Release avatars differ from the index and recent-match references')
+
+
+def build_bundle(client, source_dir, output_dir, *, workers=4):
     source, output = Path(source_dir).resolve(), Path(output_dir).resolve()
     if output.exists() or output == source or output in source.parents:
         raise PublicationError('Output must be a new directory, separate from the website sources')
     for name in FRONTEND_FILES:
         if not (source / name).is_file():
             raise PublicationError(f'Missing frontend source: {name}')
-    progress = ExportProgress('manifest', 1)
-    manifest, version, _ = client.fetch('manifest')
-    validate_manifest(manifest)
-    if not VERSION.fullmatch(version):
-        raise PublicationError('Invalid publication version')
-    progress.advance()
-    progress.finish()
-    index = {'players': [], 'aliases': {}, 'competitions': {}}
-    bucket_ids = {}
-    avatar_owners = {}
+    release = validate_release(client.fetch_release())
+    version = release['publication_version']
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.cloud-rating-pages-', dir=output.parent) as directory:
         staging = Path(directory).resolve()
         for name in FRONTEND_FILES:
             shutil.copyfile(source / name, staging / name)
         (staging / '.nojekyll').write_text('', encoding='utf-8')
-        (staging / 'avatars').mkdir()
+        progress = ExportProgress('release_packages', len(release['packages']))
+        def download(package):
+            return package, client.fetch_package(package, version=version)
+        written = set()
         with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
-            progress = ExportProgress('index_buckets', BUCKET_COUNT)
-            def index_bucket(bucket):
-                payload, actual, _ = client.fetch('index', version=version, bucket=bucket)
-                if actual != version:
-                    raise PublicationError('Successful publication changed during export')
-                object_fields(payload, {'players', 'aliases', 'competitions'}, 'Index bucket')
-                return bucket, payload
-            # Index exports also query D1; run them serially to avoid database
-            # contention. The existing worker pool remains for avatar downloads.
-            for bucket, payload in map(index_bucket, range(BUCKET_COUNT)):
-                ids = set()
-                for player in payload['players']:
-                    object_fields(player, PLAYER_FIELDS, 'Public player')
-                    public_id(player['id']); public_name(player['nickname']); avatar_path(player['avatar'])
-                    if int(player['id'], 16) % BUCKET_COUNT != bucket or player['bucket'] != bucket or player['id'] in ids:
-                        raise PublicationError('Public player bucket scope is inconsistent')
-                    ids.add(player['id']); index['players'].append(player)
-                    if player['avatar']:
-                        avatar_owners.setdefault(player['avatar'], player['id'])
-                bucket_ids[bucket] = ids
-                for identifier, names in payload['aliases'].items():
-                    if identifier not in ids or identifier in index['aliases'] or not isinstance(names, list):
-                        raise PublicationError('Alias scope differs from its public bucket')
-                    for name in names:
-                        public_name(name)
-                    index['aliases'][identifier] = names
-                for identifier, event in payload['competitions'].items():
-                    public_id(identifier); object_fields(event, {'title'}, 'Competition')
-                    if not isinstance(event['title'], str):
-                        raise PublicationError('Invalid public competition title')
-                    if identifier in index['competitions'] and index['competitions'][identifier] != event:
-                        raise PublicationError('Competition title changed during export')
-                    index['competitions'][identifier] = event
+            for package, payload in pool.map(download, release['packages']):
+                unpack_package(payload, package, staging, written)
                 progress.advance()
-            all_ids = {p['id'] for p in index['players']}
-            if len(index['players']) != len(all_ids) or len(all_ids) != manifest['stats']['players']:
-                raise PublicationError('Published player count differs from export')
-            index['players'].sort(key=lambda p: (-p['display_rating'], p['id']))
-            rank = 0
-            for player in index['players']:
-                if not player['provisional']:
-                    rank += 1
-                expected = None if player['provisional'] else rank
-                if player['rank'] != expected:
-                    raise PublicationError('Mature-player ranks differ from the published tie order')
-            index['aliases'] = dict(sorted(index['aliases'].items()))
-            index['competitions'] = dict(sorted(index['competitions'].items()))
-            progress.finish()
-            recent_count = 0
-            recent_boards = []
-            progress = ExportProgress('history_recent_buckets', BUCKET_COUNT * 2)
-            def data_bucket(item):
-                part, bucket = item
-                try:
-                    payload, actual, _ = client.fetch(part, version=version, bucket=bucket)
-                except CloudRequestError as failure:
-                    if (part != 'history' or failure.part != 'history' or failure.http_status != 503
-                            or failure.database_reason != 'RESOURCE_LIMIT' or failure.resource_kind != 'CPU_LIMIT'):
-                        raise
-                    print(json.dumps({'event': 'history_bucket_player_fallback', 'bucket': bucket,
-                        'players': len(bucket_ids[bucket]), 'resource_kind': 'CPU_LIMIT'}), flush=True)
-                    payload = {'players': {}}
-                    for identifier in sorted(bucket_ids[bucket]):
-                        records, actual, _ = client.fetch_player_history(identifier, version=version)
-                        if actual != version:
-                            raise PublicationError('Successful publication changed during export')
-                        object_fields(records, {'points'}, 'Player history')
-                        payload['players'][identifier] = records
-                    actual = version
-                if actual != version:
-                    raise PublicationError('Successful publication changed during export')
-                object_fields(payload, {'players'}, f'{part} bucket')
-                if set(payload['players']) != bucket_ids[bucket]:
-                    raise PublicationError(f'{part} bucket differs from its published player scope')
-                return part, bucket, payload
-            # Four concurrent heavy D1 exports hit RESOURCE_LIMIT while the
-            # same requests pass individually. Isolate this phase's concurrency;
-            # avatar requests continue using the original pool.
-            with ThreadPoolExecutor(max_workers=max(1, min(data_workers, 4))) as data_pool:
-                for part, bucket, payload in data_pool.map(data_bucket, ((part, bucket) for bucket in range(BUCKET_COUNT) for part in ('history', 'recent'))):
-                    for identifier, records in payload['players'].items():
-                        if part == 'history':
-                            object_fields(records, {'points'}, 'Player history')
-                            last = ''
-                            for point in records['points']:
-                                if (not isinstance(point, list) or len(point) != 3 or not isinstance(point[0], str)
-                                        or point[0] <= last or point[0] >= manifest['recent_end_exclusive']):
-                                    raise PublicationError('Historical point order or cutoff is invalid')
-                                last = point[0]
-                        else:
-                            if not isinstance(records, list):
-                                raise PublicationError('Recent matches must be a list')
-                            recent_count += len(records)
-                            for match in records:
-                                object_fields(match, MATCH_FIELDS, 'Recent match')
-                                public_id(match['opponent_id']); public_id(match['competition_id']); avatar_path(match['opponent_avatar'])
-                                if (match['opponent_id'] not in all_ids or match['competition_id'] not in index['competitions']
-                                        or not manifest['recent_start'] <= match['day'] < manifest['recent_end_exclusive']):
-                                    raise PublicationError('Recent match scope or cutoff is invalid')
-                                unit = match['score_unit']
-                                scores = (match['score'], match['opponent_score'])
-                                if (unit not in ('normalized_vp', 'imp')
-                                        or any(type(score) not in (int, float) or not math.isfinite(score) for score in scores)
-                                        or unit == 'normalized_vp' and any(not 0 <= score <= 20 for score in scores)
-                                        or unit == 'imp' and any(score != int(score) for score in scores)):
-                                    raise PublicationError('Recent match score or unit is invalid')
-                                recent_boards.append(match['boards'])
-                                if match['opponent_avatar']:
-                                    avatar_owners.setdefault(match['opponent_avatar'], match['opponent_id'])
-                    payload['players'] = dict(sorted(payload['players'].items()))
-                    write_json(staging / f'data/{part}/{bucket:03d}.json.gz', payload, compressed=True)
-                    progress.advance()
-            if recent_count != manifest['stats']['valid_matches_30d'] * 2 or math.fsum(recent_boards) != manifest['stats']['boards_30d'] * 2:
-                raise PublicationError('Recent ledger totals differ from the published statistics')
-            progress.finish()
-            def download_avatar(item):
-                asset, identifier = item
-                payload, actual, path = client.fetch('avatar', version=version, player_id=identifier)
-                if actual != version or path != asset:
-                    raise PublicationError('Avatar assignment changed during export')
-                (staging / asset).write_bytes(payload)
-            progress = ExportProgress('avatars', len(avatar_owners))
-            for _ in pool.map(download_avatar, avatar_owners.items()):
-                progress.advance()
-            progress.finish()
-        progress = ExportProgress('final_manifest_validation', 1)
-        final, actual, _ = client.fetch('manifest', version=version)
-        if actual != version or final != manifest:
-            raise PublicationError('Successful publication changed during export')
-        progress.advance()
+        if written != {item['path'] for package in release['packages'] for item in package['files']}:
+            raise PublicationError('Downloaded release file set is incomplete')
         progress.finish()
-        write_json(staging / 'data/manifest.json', manifest)
-        write_json(staging / 'data/index.json.gz', index, compressed=True)
-        # The output is installed only after every export and the final version
-        # check succeeds. GitHub uploads this directory only when this function
-        # returns successfully; a file-copy failure never deploys an artifact.
+        progress = ExportProgress('release_validation', 1)
+        validate_downloaded_bundle(staging, release)
+        progress.advance(); progress.finish()
         progress = ExportProgress('install_bundle', 1)
         shutil.copytree(staging, output)
-        progress.advance()
-        progress.finish()
-    return {'publication_version': version, 'players': len(index['players']), 'avatar_files': len(avatar_owners),
-            'recent_matches': recent_count // 2, 'data_files': 2 + BUCKET_COUNT * 2}
+        progress.advance(); progress.finish()
+    return {'publication_version': version, 'players': release['manifest']['stats']['players'],
+            'avatar_files': release['avatar_files'], 'recent_matches': release['recent_matches'], 'data_files': 258}
 
 
 def main():
@@ -498,13 +543,12 @@ def main():
     parser.add_argument('--source-dir', type=Path, default=Path(__file__).resolve().parents[1] / 'site')
     parser.add_argument('--output-dir', type=Path, default=Path('cloud-pages-output'))
     parser.add_argument('--workers', type=int, default=4)
-    parser.add_argument('--data-workers', type=int, default=1, help='Concurrent history/recent D1 requests (default: 1).')
     args = parser.parse_args()
     try:
         client = CloudPublicationClient(args.site_url or '', os.environ.get('GITHUB_PUBLICATION_TOKEN'),
             service_token=os.environ.get('SITES_SERVICE_ACCESS_TOKEN'))
         print(json.dumps(build_bundle(client, args.source_dir, args.output_dir,
-            workers=args.workers, data_workers=args.data_workers), ensure_ascii=False))
+            workers=args.workers), ensure_ascii=False))
     except PublicationError as error:
         parser.exit(1, str(error) + '\n')
     except (OSError, ValueError, TypeError, KeyError):
