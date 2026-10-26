@@ -16,6 +16,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Separate build attempts; deploy-only retries reuse the recorded build output.
+    outputs:
+      pages_artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
       pages: read
@@ -25,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Build public bundle from one successful cloud version
+      - name: Download and verify prepared cloud release
         env:
           CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
           GITHUB_PUBLICATION_TOKEN: ${{ secrets.XR_PUBLICATION_TOKEN }}
@@ -34,6 +37,7 @@ jobs:
         run: python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output
       - uses: actions/upload-pages-artifact@v5
         with:
+          name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
           path: cloud-pages-output
           include-hidden-files: true # Retain only the generated bundle's .nojekyll file.
   deploy:
@@ -49,3 +53,5 @@ jobs:
       - name: Deploy complete public bundle
         id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: ${{ needs.build.outputs.pages_artifact_name }}
