@@ -19,7 +19,7 @@ import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 BUCKET_COUNT = 128
 FRONTEND_FILES = ('index.html', 'app.js', 'player-name.js', 'rating-core.mjs', 'score-chart.mjs', 'styles.css')
@@ -84,6 +84,11 @@ DATABASE_RESOURCE_KINDS = frozenset(('MEMORY_LIMIT', 'CPU_LIMIT', 'UNKNOWN_RESOU
 
 class PublicationError(RuntimeError):
     pass
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
 
 
 class CloudRequestError(PublicationError):
@@ -214,6 +219,8 @@ class CloudPublicationClient:
         if not token:
             raise PublicationError('GITHUB_PUBLICATION_TOKEN is required')
         self.endpoint = site_url.rstrip('/') + '/api/admin/github-publication'
+        self.player_endpoint = site_url.rstrip('/') + '/api/players/'
+        self.player_opener = build_opener(NoRedirect())
         self.headers = {'X-Publication-Authorization': 'Bearer ' + token}
         # Platform private-Site access is separate from the application read-only token.
         if service_token:
@@ -270,6 +277,44 @@ class CloudPublicationClient:
                 raise CloudRequestError(part, bucket, None, 'NETWORK_UNAVAILABLE') from None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 raise PublicationError('Cloud public export returned invalid JSON') from None
+
+    def fetch_player_history(self, player_id, *, version):
+        public_id(player_id)
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            raise PublicationError('Invalid publication version')
+        headers = {}
+        if 'OAI-Sites-Authorization' in self.headers:
+            headers['OAI-Sites-Authorization'] = self.headers['OAI-Sites-Authorization']
+        request = Request(self.player_endpoint + player_id + '/history', headers=headers)
+        try:
+            with self.player_opener.open(request, timeout=120) as response:
+                if not response.headers.get('Content-Type', '').startswith('application/json'):
+                    raise PublicationError('Cloud endpoint did not return a public JSON history')
+                payload = response.read(32 * 1024 * 1024 + 1)
+                if len(payload) > 32 * 1024 * 1024:
+                    raise PublicationError('Public history response is too large')
+                data = json.loads(payload)
+            object_fields(data, {'id', 'points', 'publication_version'}, 'Public player history')
+            if data['id'] != player_id or data['publication_version'] != version:
+                raise PublicationError('Successful publication or player changed during history export')
+            if not isinstance(data['points'], list):
+                raise PublicationError('Player history points must be a list')
+            finite_values(data['points'])
+            for point in data['points']:
+                if (not isinstance(point, list) or len(point) != 3
+                        or type(point[1]) not in (int, float)
+                        or point[2] is not None and type(point[2]) not in (int, float)):
+                    raise PublicationError('Player history point format is invalid')
+            return {'points': data['points']}, data['publication_version'], None
+        except HTTPError as error:
+            code, reason, database_code, resource_kind = safe_http_error(error)
+            raise CloudRequestError('history', int(player_id, 16) % BUCKET_COUNT,
+                error.code, code, reason, database_code, resource_kind) from None
+        except URLError:
+            raise CloudRequestError('history', int(player_id, 16) % BUCKET_COUNT,
+                None, 'NETWORK_UNAVAILABLE') from None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise PublicationError('Cloud public history returned invalid JSON') from None
 
 
 def write_json(path, value, *, compressed=False):
@@ -354,7 +399,22 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, data_workers=1):
             progress = ExportProgress('history_recent_buckets', BUCKET_COUNT * 2)
             def data_bucket(item):
                 part, bucket = item
-                payload, actual, _ = client.fetch(part, version=version, bucket=bucket)
+                try:
+                    payload, actual, _ = client.fetch(part, version=version, bucket=bucket)
+                except CloudRequestError as failure:
+                    if (part != 'history' or failure.part != 'history' or failure.http_status != 503
+                            or failure.database_reason != 'RESOURCE_LIMIT' or failure.resource_kind != 'CPU_LIMIT'):
+                        raise
+                    print(json.dumps({'event': 'history_bucket_player_fallback', 'bucket': bucket,
+                        'players': len(bucket_ids[bucket]), 'resource_kind': 'CPU_LIMIT'}), flush=True)
+                    payload = {'players': {}}
+                    for identifier in sorted(bucket_ids[bucket]):
+                        records, actual, _ = client.fetch_player_history(identifier, version=version)
+                        if actual != version:
+                            raise PublicationError('Successful publication changed during export')
+                        object_fields(records, {'points'}, 'Player history')
+                        payload['players'][identifier] = records
+                    actual = version
                 if actual != version:
                     raise PublicationError('Successful publication changed during export')
                 object_fields(payload, {'players'}, f'{part} bucket')
