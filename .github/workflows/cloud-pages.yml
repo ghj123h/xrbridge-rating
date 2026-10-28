@@ -28,13 +28,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Restore public avatar packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/xr-public-avatar-packages
+          key: xr-public-avatar-packages-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            xr-public-avatar-packages-v1-${{ runner.os }}-
       - name: Download and verify prepared cloud release
         env:
           CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
           GITHUB_PUBLICATION_TOKEN: ${{ secrets.XR_PUBLICATION_TOKEN }}
           SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
           PAGES_SOURCE_DIR: ${{ vars.PAGES_SOURCE_DIR || '.' }}
-        run: python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output
+        run: >-
+          python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR"
+          --output-dir cloud-pages-output --avatar-cache-dir "$RUNNER_TEMP/xr-public-avatar-packages"
       - uses: actions/upload-pages-artifact@v5
         with:
           name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}

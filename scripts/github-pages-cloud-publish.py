@@ -501,15 +501,61 @@ def validate_downloaded_bundle(staging, release):
         raise PublicationError('Release avatars differ from the index and recent-match references')
 
 
-def build_bundle(client, source_dir, output_dir, *, workers=4):
+def cached_avatar_package(cache, package):
+    if cache is None or not package['name'].startswith('avatars-'):
+        return None
+    try:
+        with (cache / (package['sha256'] + '.tar')).open('rb') as stream:
+            payload = stream.read(package['size'] + 1)
+    except FileNotFoundError:
+        return None
+    if len(payload) != package['size'] or hashlib.sha256(payload).hexdigest() != package['sha256']:
+        return None
+    return payload
+
+
+def cache_avatar_package(cache, package, payload):
+    if cache is None or not package['name'].startswith('avatars-'):
+        return
+    # Only fully unpacked, hash-verified public avatar packages reach this call.
+    # Replace rather than overwrite so an interrupted cache write is a miss.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix='.avatar-', suffix='.tmp', dir=cache, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+        temporary.replace(cache / (package['sha256'] + '.tar'))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def prune_avatar_cache(cache, release):
+    if cache is None:
+        return
+    required = {package['sha256'] + '.tar' for package in release['packages']
+                if package['name'].startswith('avatars-')}
+    for path in cache.iterdir():
+        if (path.is_file() and re.fullmatch(r'[a-f0-9]{64}\.tar', path.name)
+                and path.name not in required):
+            path.unlink()
+
+
+def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=None):
     source, output = Path(source_dir).resolve(), Path(output_dir).resolve()
     if output.exists() or output == source or output in source.parents:
         raise PublicationError('Output must be a new directory, separate from the website sources')
+    cache = Path(avatar_cache_dir).resolve() if avatar_cache_dir is not None else None
+    if cache is not None and any(cache == path or cache in path.parents or path in cache.parents
+                                 for path in (source, output)):
+        raise PublicationError('Avatar cache must be separate from website sources and output')
     for name in FRONTEND_FILES:
         if not (source / name).is_file():
             raise PublicationError(f'Missing frontend source: {name}')
     release = validate_release(client.fetch_release())
     version = release['publication_version']
+    if cache is not None:
+        cache.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.cloud-rating-pages-', dir=output.parent) as directory:
         staging = Path(directory).resolve()
@@ -518,17 +564,23 @@ def build_bundle(client, source_dir, output_dir, *, workers=4):
         (staging / '.nojekyll').write_text('', encoding='utf-8')
         progress = ExportProgress('release_packages', len(release['packages']))
         def download(package):
-            return package, client.fetch_package(package, version=version)
+            payload = cached_avatar_package(cache, package)
+            if payload is not None:
+                return package, payload, True
+            return package, client.fetch_package(package, version=version), False
         written = set()
         with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
-            for package, payload in pool.map(download, release['packages']):
+            for package, payload, cache_hit in pool.map(download, release['packages']):
                 unpack_package(payload, package, staging, written)
+                if not cache_hit:
+                    cache_avatar_package(cache, package, payload)
                 progress.advance()
         if written != {item['path'] for package in release['packages'] for item in package['files']}:
             raise PublicationError('Downloaded release file set is incomplete')
         progress.finish()
         progress = ExportProgress('release_validation', 1)
         validate_downloaded_bundle(staging, release)
+        prune_avatar_cache(cache, release)
         progress.advance(); progress.finish()
         progress = ExportProgress('install_bundle', 1)
         shutil.copytree(staging, output)
@@ -543,12 +595,14 @@ def main():
     parser.add_argument('--source-dir', type=Path, default=Path(__file__).resolve().parents[1] / 'site')
     parser.add_argument('--output-dir', type=Path, default=Path('cloud-pages-output'))
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--avatar-cache-dir', type=Path,
+                        help='Reuse verified public avatar packages between CI builds; disabled by default')
     args = parser.parse_args()
     try:
         client = CloudPublicationClient(args.site_url or '', os.environ.get('GITHUB_PUBLICATION_TOKEN'),
             service_token=os.environ.get('SITES_SERVICE_ACCESS_TOKEN'))
         print(json.dumps(build_bundle(client, args.source_dir, args.output_dir,
-            workers=args.workers), ensure_ascii=False))
+            workers=args.workers, avatar_cache_dir=args.avatar_cache_dir), ensure_ascii=False))
     except PublicationError as error:
         parser.exit(1, str(error) + '\n')
     except (OSError, ValueError, TypeError, KeyError):
