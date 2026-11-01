@@ -43,7 +43,7 @@ export function mountPredictions(container, {
         </table></div>
         <div class="pagination prediction-pagination"><span class="pagination-caption">保级指留在本级，不含升级；三项概率合计 100%。</span><div class="page-controls"><button type="button" class="pagination-button" data-prediction-prev aria-label="预测名单上一页">←</button><span data-prediction-page></span><button type="button" class="pagination-button" data-prediction-next aria-label="预测名单下一页">→</button></div></div>
       </div>
-      <div class="prediction-blank" data-prediction-swiss-blank></div>
+      <div class="prediction-blank prediction-note" data-prediction-swiss-blank></div>
     </section>
     <section class="panel prediction-section" aria-labelledby="prediction-knockout-title">
       <div class="panel-heading"><div class="section-title"><span class="section-kicker">KNOCKOUT STAGE</span><h2 id="prediction-knockout-title">淘汰赛预测</h2></div></div>
@@ -169,7 +169,7 @@ export function mountPredictions(container, {
     const turn = ++sequence;
     ui.title.textContent = TITLES[current];
     ui.description.textContent = current === 'monthly'
-      ? '根据现有等级分，估计升、保、降级概率。' : '暂未启用';
+      ? '根据最新等级分和已完成轮次，估计升、保、降级概率。' : '正在读取赛事进度…';
     for (const link of container.querySelectorAll('[data-prediction-link]')) {
       const active = link.dataset.predictionLink === current;
       link.classList.toggle('active', active);
@@ -181,18 +181,37 @@ export function mountPredictions(container, {
     ui.loading.hidden = true;
     ui.error.hidden = true;
     ui['swiss-blank'].hidden = current === 'monthly';
-    if (current !== 'monthly') return;
+    ui['swiss-blank'].textContent = '';
     ui.loading.hidden = Boolean(data);
     try {
       await load();
-      if (turn !== sequence || current !== 'monthly') return;
+      if (turn !== sequence) return;
+      if (current !== 'monthly') {
+        const event = data.event_statuses?.[current];
+        if (event?.status === 'complete') {
+          ui.description.textContent = '本届赛事已结束。';
+          ui.edition.textContent = `${event.edition.slice(0, 4)} 年 ${Number(event.edition.slice(4))} 月`;
+          ui['swiss-blank'].textContent = `积分赛已完成 ${format(event.completed_swiss_rounds, 0)} 轮，剩余 ${format(event.remaining_swiss_rounds, 0)} 轮，无需模拟。`;
+        } else {
+          ui.description.textContent = '暂未启用';
+        }
+        return;
+      }
       ui.edition.textContent = `${data.edition.slice(0, 4)} 年 ${Number(data.edition.slice(4))} 月 · ${format(data.players.length, 0)} 人`;
-      ui.note.textContent = `每组 ${format(data.iterations, 0)} 次九轮模拟 · 假设正常参赛，未纳入当日实时比分。`;
+      const remaining = data.remaining_rounds ?? 9;
+      const completed = data.completed_rounds ?? 0;
+      const cutoff = data.score_cutoff || data.rating_cutoff;
+      const pairing = data.next_round_pairings === 'approximate'
+        ? '后续按累计 VP 邻位近似编排并避免重遇。'
+        : data.first_round_pairings === 'random' ? '首轮随机近似；后续按累计 VP 邻位编排并避免重遇。' : '';
+      const scores = data.current_score_source === 'cloud_scores_with_local_official_first_round_results'
+        ? '云端首轮比分与本地读取的官方首轮结果已交叉核对。' : '';
+      ui.note.textContent = `截至 ${cutoff}，已完成 ${format(completed, 0)} 轮；每组对剩余 ${format(remaining, 0)} 轮模拟 ${format(data.iterations, 0)} 次。${scores}${pairing}假设正常参赛。`;
       onDataLoaded(data);
       ui.monthly.hidden = false;
       renderRows();
     } catch {
-      if (turn === sequence && current === 'monthly') ui.error.hidden = false;
+      if (turn === sequence) ui.error.hidden = false;
     } finally {
       if (turn === sequence) ui.loading.hidden = true;
     }
@@ -202,6 +221,6 @@ export function mountPredictions(container, {
   for (const key of ['group', 'sort', 'size']) ui[key].addEventListener('change', () => { page = 0; renderRows(); });
   ui.prev.addEventListener('click', () => { page--; renderRows(); });
   ui.next.addEventListener('click', () => { page++; renderRows(); });
-  ui.retry.addEventListener('click', () => show('monthly'));
+  ui.retry.addEventListener('click', () => show(current));
   return { show, setManifest(value) { manifest = value; renderRows(); } };
 }
