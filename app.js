@@ -1,5 +1,6 @@
 import { dateString, shiftDay, filterPlayers, parseRoute, formatRating, matchScoreDisplay, historyMetrics, rankingPage, boardChangeKey, rankingInfo } from './rating-core.mjs';
 import { drawScoreChart } from './score-chart.mjs';
+import { mountPredictions } from './predictions.mjs';
 import './player-name.js';
 
 const $ = id => document.getElementById(id);
@@ -8,6 +9,15 @@ const number = (value, digits = 0) => Number(value).toLocaleString('zh-CN', { mi
 const signed = value => `${value > 0 ? '+' : ''}${formatRating(value)}`;
 const changeClass = value => value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral';
 const state = { manifest: null, index: null, board: 'rating', page: 0, pageSize: 30, history: new Map(), recent: new Map(), recentLimit: 60, routeSequence: 0 };
+const predictions = mountPredictions($('predictions-view'), {
+  getManifest: () => state.manifest,
+  onDataLoaded(data) {
+    const target = parseRoute(location.hash);
+    if (target.view === 'predictions' && target.kind === 'monthly') {
+      $('header-update').textContent = `数据截至 ${shiftDay(data.rating_cutoff.slice(0, 10), -1)}`;
+    }
+  },
+});
 
 function dateTime(value) {
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));
@@ -151,13 +161,29 @@ function renderRules() {
   <div class="rule-grid"><div class="rule-card"><h2>排名与筛选</h2><p>仅成熟牌手参与排名，按等级分降序排列，分数相同时沿用固定次序。暂定牌手可出现在排行榜中，名次显示为“—”；个人页显示“#-”，不计算分位数。成熟牌手的全站排名与分位数均以全站成熟牌手为统计范围。</p><p>排行榜筛选后保留全站成熟牌手排名，支持翻页和跳页；上分榜和下分榜仅显示符合所选条件的成熟牌手前 30 名。</p><p>活跃牌手指近 30 日至少有一场有效计分对局的人。场均 VP 为近 30 日有效对局归一化 VP 的算术平均。</p></div><div class="rule-card"><h2>数据覆盖与更新</h2><p>当前历史覆盖 ${state.manifest.history_start} 至 ${state.manifest.history_end}。数据排他截止点：${dateTime(state.manifest.cutoff)}（北京时间）。最后成功发布：${dateTime(state.manifest.generated_at)}。</p><p>历史曲线与最高分使用当前算法重算的结果。比分修订或算法调整可能改变历史；采集或计分未通过校验时，网页保留上一份成功发布的数据。</p><p>算法 ${escape(state.manifest.algorithm)}</p></div></div>`;
 }
 async function route() {
-  if (!state.index) return;
   const sequence = ++state.routeSequence;
   const target = parseRoute(location.hash);
   $('home-view').hidden = target.view !== 'home';
   $('player-view').hidden = target.view !== 'player';
   $('rules-view').hidden = target.view !== 'rules';
+  $('predictions-view').hidden = target.view !== 'predictions';
   $('error-state').hidden = true;
+  document.querySelectorAll('.main-nav .nav-link').forEach(link => {
+    const active = link.hash.startsWith('#predictions') ? target.view === 'predictions'
+      : link.hash === '#rules' ? target.view === 'rules' : ['home', 'player'].includes(target.view);
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  if (target.view === 'predictions') {
+    $('loading-state').hidden = true;
+    $('header-update').textContent = state.manifest ? `数据截至 ${shiftDay(state.manifest.cutoff.slice(0, 10), -1)}` : '三大赛预测';
+    document.title = `${{ monthly: '月赛预测', team: '团体赛预测', pair: '双人团预测' }[target.kind]} · 新睿等级分`;
+    await predictions.show(target.kind);
+    return;
+  }
+  if (!state.index) { await boot(); return; }
+  $('header-update').textContent = `数据截至 ${shiftDay(state.manifest.cutoff.slice(0, 10), -1)}`;
   if (target.view === 'rules') { renderRules(); document.title = '等级分规则 · 新睿等级分'; }
   if (target.view === 'home') { renderRanking(); document.title = '新睿等级分 · 桥牌排行榜'; }
   if (target.view !== 'player') return;
@@ -185,6 +211,7 @@ function showError(error) {
   $('error-message').textContent = error.message;
 }
 async function boot() {
+  if (parseRoute(location.hash).view === 'predictions') { await route(); return; }
   $('loading-state').hidden = false;
   $('error-state').hidden = true;
   try {

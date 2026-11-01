@@ -25,7 +25,8 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 BUCKET_COUNT = 128
-FRONTEND_FILES = ('index.html', 'app.js', 'player-name.js', 'rating-core.mjs', 'score-chart.mjs', 'styles.css')
+FRONTEND_FILES = ('index.html', 'app.js', 'player-name.js', 'rating-core.mjs', 'score-chart.mjs', 'styles.css',
+                  'predictions.mjs', 'predictions.css', 'predictions/monthly-202611.json')
 PLAYER_FIELDS = {'id', 'bucket', 'avatar', 'nickname', 'display_rating', 'rating_deviation', 'provisional',
                  'rated_board_count', 'rated_match_count', 'rating_tier', 'last_rated_day',
                  'peak_display_rating', 'gain_1d', 'gain_7d', 'gain_30d', 'delta_1d', 'delta_7d',
@@ -560,7 +561,9 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=
     with tempfile.TemporaryDirectory(prefix='.cloud-rating-pages-', dir=output.parent) as directory:
         staging = Path(directory).resolve()
         for name in FRONTEND_FILES:
-            shutil.copyfile(source / name, staging / name)
+            target = staging / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / name, target)
         (staging / '.nojekyll').write_text('', encoding='utf-8')
         progress = ExportProgress('release_packages', len(release['packages']))
         def download(package):

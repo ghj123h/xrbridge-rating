@@ -102,6 +102,9 @@ export function curvePoints(points, period, endDay) {
 
 export function parseRoute(hash) {
   if (hash === '#rules') return { view: 'rules' };
+  if (hash === '#predictions') return { view: 'predictions', kind: 'monthly' };
+  const prediction = /^#predictions\/(monthly|team|pair)$/.exec(hash);
+  if (prediction) return { view: 'predictions', kind: prediction[1] };
   const match = /^#player\/([a-f0-9]{24})$/.exec(hash);
   return match ? { view: 'player', id: match[1] } : { view: 'home' };
 }

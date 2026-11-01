@@ -310,3 +310,8 @@ select { appearance: none; color: #4d6256; background: #fff url("data:image/svg+
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+@media (max-width: 380px) {
+  .site-header { height: auto; }
+  .header-inner { padding: 12px 0 9px; gap: 8px; }
+  .main-nav { flex-basis: 100%; margin-left: 0; gap: 23px; }
+}
