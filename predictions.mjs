@@ -204,9 +204,13 @@ export function mountPredictions(container, {
       const pairing = data.next_round_pairings === 'approximate'
         ? '后续按累计 VP 邻位近似编排并避免重遇。'
         : data.first_round_pairings === 'random' ? '首轮随机近似；后续按累计 VP 邻位编排并避免重遇。' : '';
-      const scores = data.current_score_source === 'cloud_scores_with_local_official_first_round_results'
-        ? '云端首轮比分与本地读取的官方首轮结果已交叉核对。' : '';
-      ui.note.textContent = `截至 ${cutoff}，已完成 ${format(completed, 0)} 轮；每组对剩余 ${format(remaining, 0)} 轮模拟 ${format(data.iterations, 0)} 次。${scores}${pairing}假设正常参赛。`;
+      const scores = data.current_score_source === 'cloud_scores_with_local_official_completed_round_results'
+        ? '云端已完成轮次比分与本地读取的官方结果已逐轮核对。'
+        : data.current_score_source === 'cloud_scores_with_local_official_first_round_results'
+          ? '云端首轮比分与本地读取的官方首轮结果已交叉核对。' : '';
+      const withdrawals = data.withdrawn_player_count
+        ? `已排除 ${format(data.withdrawn_player_count, 0)} 名退赛牌手。` : '';
+      ui.note.textContent = `截至 ${cutoff}，已完成 ${format(completed, 0)} 轮；每组对剩余 ${format(remaining, 0)} 轮模拟 ${format(data.iterations, 0)} 次。${scores}${withdrawals}${pairing}假设正常参赛。`;
       onDataLoaded(data);
       ui.monthly.hidden = false;
       renderRows();
