@@ -2,6 +2,21 @@ name: Publish cloud rating data to GitHub Pages
 
 on:
   workflow_dispatch:
+    inputs:
+      job_id:
+        description: Cloud preparation job ID
+        required: false
+        type: string
+      publication_version:
+        description: Fixed successful cloud publication version
+        required: false
+        type: string
+      prepare_mode:
+        description: Prepare cloud data before downloading
+        required: false
+        default: none
+        type: choice
+        options: [none, release, buckets]
   schedule:
     - cron: '45 18 * * *' # 02:45 Beijing time; publishes only a successful cloud snapshot.
 
@@ -13,7 +28,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.prepare_mode == 'release' || inputs.prepare_mode == 'buckets') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run independent cloud preparation job
+        env:
+          CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
+          PUBLICATION_JOB_TOKEN: ${{ secrets.XR_PUBLICATION_JOB_TOKEN }}
+          SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
+          CLOUD_JOB_ID: ${{ inputs.job_id }}
+          CLOUD_PUBLICATION_VERSION: ${{ inputs.publication_version }}
+          CLOUD_PREPARE_MODE: ${{ inputs.prepare_mode }}
+        run: >-
+          python scripts/github-pages-cloud-job.py --job-id "$CLOUD_JOB_ID"
+          --version "$CLOUD_PUBLICATION_VERSION" --mode "$CLOUD_PREPARE_MODE"
   build:
+    needs: prepare
+    if: ${{ !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') && inputs.prepare_mode != 'buckets' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Separate build attempts; deploy-only retries reuse the recorded build output.
@@ -41,9 +78,13 @@ jobs:
           GITHUB_PUBLICATION_TOKEN: ${{ secrets.XR_PUBLICATION_TOKEN }}
           SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
           PAGES_SOURCE_DIR: ${{ vars.PAGES_SOURCE_DIR || '.' }}
-        run: >-
-          python scripts/github-pages-cloud-publish.py --source-dir "$PAGES_SOURCE_DIR"
-          --output-dir cloud-pages-output --avatar-cache-dir "$RUNNER_TEMP/xr-public-avatar-packages"
+          CLOUD_PUBLICATION_VERSION: ${{ inputs.prepare_mode == 'release' && inputs.publication_version || '' }}
+        run: |
+          args=(--source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output --avatar-cache-dir "$RUNNER_TEMP/xr-public-avatar-packages")
+          if [[ -n "$CLOUD_PUBLICATION_VERSION" ]]; then
+            args+=(--version "$CLOUD_PUBLICATION_VERSION")
+          fi
+          python scripts/github-pages-cloud-publish.py "${args[@]}"
       - uses: actions/upload-pages-artifact@v5
         with:
           name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
@@ -51,6 +92,7 @@ jobs:
           include-hidden-files: true # Retain only the generated bundle's .nojekyll file.
   deploy:
     needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       pages: write

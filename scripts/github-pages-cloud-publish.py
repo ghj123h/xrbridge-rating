@@ -542,7 +542,7 @@ def prune_avatar_cache(cache, release):
             path.unlink()
 
 
-def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=None):
+def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=None, version=None):
     source, output = Path(source_dir).resolve(), Path(output_dir).resolve()
     if output.exists() or output == source or output in source.parents:
         raise PublicationError('Output must be a new directory, separate from the website sources')
@@ -553,7 +553,9 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=
     for name in FRONTEND_FILES:
         if not (source / name).is_file():
             raise PublicationError(f'Missing frontend source: {name}')
-    release = validate_release(client.fetch_release())
+    if version is not None and (not isinstance(version, str) or not VERSION.fullmatch(version)):
+        raise PublicationError('Invalid publication version')
+    release = validate_release(client.fetch_release(version=version), expected_version=version)
     version = release['publication_version']
     if cache is not None:
         cache.mkdir(parents=True, exist_ok=True)
@@ -598,6 +600,7 @@ def main():
     parser.add_argument('--source-dir', type=Path, default=Path(__file__).resolve().parents[1] / 'site')
     parser.add_argument('--output-dir', type=Path, default=Path('cloud-pages-output'))
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--version', help='Download the exact publication prepared by the background job')
     parser.add_argument('--avatar-cache-dir', type=Path,
                         help='Reuse verified public avatar packages between CI builds; disabled by default')
     args = parser.parse_args()
@@ -605,7 +608,7 @@ def main():
         client = CloudPublicationClient(args.site_url or '', os.environ.get('GITHUB_PUBLICATION_TOKEN'),
             service_token=os.environ.get('SITES_SERVICE_ACCESS_TOKEN'))
         print(json.dumps(build_bundle(client, args.source_dir, args.output_dir,
-            workers=args.workers, avatar_cache_dir=args.avatar_cache_dir), ensure_ascii=False))
+            workers=args.workers, avatar_cache_dir=args.avatar_cache_dir, version=args.version), ensure_ascii=False))
     except PublicationError as error:
         parser.exit(1, str(error) + '\n')
     except (OSError, ValueError, TypeError, KeyError):
