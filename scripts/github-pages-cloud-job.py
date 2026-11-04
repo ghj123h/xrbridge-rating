@@ -48,9 +48,11 @@ def emit(event, **values):
     print(json.dumps({"event": event, **values}, ensure_ascii=False), flush=True)
 
 
-def validate_identity(value, *, job_id, version, mode):
+def validate_identity(value, *, job_id, version, mode, source_build_id=None):
     if (not isinstance(value, dict) or value.get("job_id") != job_id
             or value.get("publication_version") != version or value.get("mode") != mode):
+        raise JobError("cloud_job_identity_mismatch")
+    if source_build_id is not None and value.get("source_build_id") != source_build_id:
         raise JobError("cloud_job_identity_mismatch")
     if value.get("status") not in ("queued", "running", "complete", "failed"):
         raise JobError("cloud_job_status_invalid")
@@ -62,8 +64,10 @@ def completed(value, *, mode):
     if (value.get("status") != "complete" or not isinstance(result, dict)
             or type(result.get("completed_buckets")) is not int or result["completed_buckets"] != 128):
         raise JobError("cloud_job_result_incomplete")
-    if mode == "release" and (result.get("status") != "ready" or result.get("phase") != "ready"):
-        raise JobError("cloud_release_not_ready")
+    if mode in ("release", "validate"):
+        if (result.get("status") != "ready" or result.get("phase") != "ready"
+                or type(result.get("indexed_buckets")) is not int or result["indexed_buckets"] != 128):
+            raise JobError("cloud_release_not_ready")
     return value
 
 
@@ -79,6 +83,8 @@ def safe_summary(value):
                "mode": value["mode"], "status": value["status"], "result": progress}
     if type(value.get("runner_attempts")) is int:
         summary["runner_attempts"] = value["runner_attempts"]
+    if isinstance(value.get("source_build_id"), str) and JOB_ID.fullmatch(value["source_build_id"]):
+        summary["source_build_id"] = value["source_build_id"]
     return summary
 
 
@@ -127,23 +133,32 @@ class CloudJobClient:
             raise JobError("cloud_job_response_invalid", retryable=True) from None
         return value
 
-    def status(self, *, job_id, version, mode):
-        return validate_identity(self._request(job_id=job_id), job_id=job_id, version=version, mode=mode)
+    def status(self, *, job_id, version, mode, source_build_id=None):
+        return validate_identity(self._request(job_id=job_id), job_id=job_id, version=version, mode=mode,
+                                 source_build_id=source_build_id)
 
-    def run(self, *, job_id, version, mode, run_id):
+    def run(self, *, job_id, version, mode, run_id, source_build_id=None):
         if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
             raise JobError("invalid_cloud_job_id")
         if not isinstance(version, str) or not VERSION.fullmatch(version):
             raise JobError("invalid_publication_version")
-        if mode not in ("buckets", "release"):
+        if mode not in ("buckets", "release", "validate"):
             raise JobError("invalid_cloud_job_mode")
         if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
             raise JobError("invalid_github_run_id")
+        if source_build_id is not None:
+            if mode != "validate":
+                raise JobError("source_build_id_requires_validate")
+            if not isinstance(source_build_id, str) or not JOB_ID.fullmatch(source_build_id):
+                raise JobError("invalid_source_build_id")
         payload = {"job_id": job_id, "version": version, "mode": mode, "run_id": run_id}
+        if source_build_id is not None:
+            payload["source_build_id"] = source_build_id
         for attempt in range(1, 7):
             self.output("cloud_pages_job_execution_attempt", job_id=job_id, attempt=attempt, total_attempts=6)
             try:
-                value = validate_identity(self._request(payload), job_id=job_id, version=version, mode=mode)
+                value = validate_identity(self._request(payload), job_id=job_id, version=version, mode=mode,
+                                          source_build_id=source_build_id)
                 if value["status"] == "complete":
                     return {**completed(value, mode=mode), "runner_attempts": attempt}
                 if value["status"] != "failed":
@@ -158,7 +173,8 @@ class CloudJobClient:
                 # A failed connection does not prove that execution failed. Read
                 # the same job before resubmitting; the server owns checkpoints.
                 try:
-                    state = self.status(job_id=job_id, version=version, mode=mode)
+                    state = self.status(job_id=job_id, version=version, mode=mode,
+                                        source_build_id=source_build_id)
                 except JobError as status_failure:
                     if status_failure.http_status not in (404, 429, 500, 502, 503, 504) and not status_failure.retryable:
                         raise
@@ -195,12 +211,13 @@ def main(argv=None):
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--mode", required=True)
+    parser.add_argument("--source-build-id")
     try:
         args = parser.parse_args(argv)
         client = CloudJobClient(os.environ.get("CLOUD_SITE_URL"), os.environ.get("PUBLICATION_JOB_TOKEN"),
                                 os.environ.get("SITES_SERVICE_ACCESS_TOKEN"))
         result = client.run(job_id=args.job_id, version=args.version, mode=args.mode,
-                            run_id=os.environ.get("GITHUB_RUN_ID"))
+                            run_id=os.environ.get("GITHUB_RUN_ID"), source_build_id=args.source_build_id)
     except JobError as error:
         details = {"code": error.code}
         if error.http_status is not None:

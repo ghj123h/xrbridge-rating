@@ -16,7 +16,11 @@ on:
         required: false
         default: none
         type: choice
-        options: [none, release, buckets]
+        options: [none, release, buckets, validate]
+      source_build_id:
+        description: Optional isolated bucket build to finish in validate mode
+        required: false
+        type: string
   schedule:
     - cron: '45 18 * * *' # 02:45 Beijing time; publishes only a successful cloud snapshot.
 
@@ -29,7 +33,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.prepare_mode == 'release' || inputs.prepare_mode == 'buckets') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.prepare_mode == 'release' || inputs.prepare_mode == 'buckets' || inputs.prepare_mode == 'validate') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -45,12 +49,16 @@ jobs:
           CLOUD_JOB_ID: ${{ inputs.job_id }}
           CLOUD_PUBLICATION_VERSION: ${{ inputs.publication_version }}
           CLOUD_PREPARE_MODE: ${{ inputs.prepare_mode }}
-        run: >-
-          python scripts/github-pages-cloud-job.py --job-id "$CLOUD_JOB_ID"
-          --version "$CLOUD_PUBLICATION_VERSION" --mode "$CLOUD_PREPARE_MODE"
+          CLOUD_SOURCE_BUILD_ID: ${{ inputs.source_build_id }}
+        run: |
+          args=(--job-id "$CLOUD_JOB_ID" --version "$CLOUD_PUBLICATION_VERSION" --mode "$CLOUD_PREPARE_MODE")
+          if [[ -n "$CLOUD_SOURCE_BUILD_ID" ]]; then
+            args+=(--source-build-id "$CLOUD_SOURCE_BUILD_ID")
+          fi
+          python scripts/github-pages-cloud-job.py "${args[@]}"
   build:
     needs: prepare
-    if: ${{ !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') && inputs.prepare_mode != 'buckets' }}
+    if: ${{ !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') && inputs.prepare_mode != 'buckets' && inputs.prepare_mode != 'validate' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Separate build attempts; deploy-only retries reuse the recorded build output.
