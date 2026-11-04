@@ -12,11 +12,11 @@ on:
         required: false
         type: string
       prepare_mode:
-        description: Prepare cloud data before downloading
+        description: Cloud preparation mode (none also runs a full release)
         required: false
-        default: none
+        default: release
         type: choice
-        options: [none, release, buckets, validate]
+        options: [release, buckets, validate, none]
       source_build_id:
         description: Optional isolated bucket build to finish in validate mode
         required: false
@@ -32,23 +32,98 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      publication_version: ${{ steps.resolve.outputs.publication_version }}
+      job_id: ${{ steps.resolve.outputs.job_id }}
+      prepare_mode: ${{ steps.resolve.outputs.prepare_mode }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Resolve one publication identity for this run
+        id: resolve
+        env:
+          CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
+          PUBLICATION_JOB_TOKEN: ${{ secrets.XR_PUBLICATION_JOB_TOKEN }}
+          SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
+          REQUESTED_PUBLICATION_VERSION: ${{ inputs.publication_version }}
+          REQUESTED_JOB_ID: ${{ inputs.job_id }}
+          REQUESTED_PREPARE_MODE: ${{ inputs.prepare_mode }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from urllib.parse import urlsplit
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+          import uuid
+
+          job_id = os.environ.get('REQUESTED_JOB_ID', '') or uuid.uuid4().hex
+          if not re.fullmatch(r'[a-f0-9]{32}', job_id):
+              raise SystemExit('Invalid requested preparation job ID')
+          mode = os.environ.get('REQUESTED_PREPARE_MODE', '') or 'release'
+          if mode == 'none':
+              mode = 'release'
+          if mode not in ('release', 'buckets', 'validate'):
+              raise SystemExit('Invalid requested preparation mode')
+          version = os.environ.get('REQUESTED_PUBLICATION_VERSION', '')
+          if version:
+              if not re.fullmatch(r'[a-f0-9]{64}', version):
+                  raise SystemExit('Invalid requested publication version')
+          else:
+              origin = os.environ.get('CLOUD_SITE_URL', '').rstrip('/')
+              parsed = urlsplit(origin)
+              if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                  raise SystemExit('Invalid cloud Site origin')
+              token = os.environ.get('PUBLICATION_JOB_TOKEN', '')
+              service_token = os.environ.get('SITES_SERVICE_ACCESS_TOKEN', '')
+              if not token or not service_token:
+                  raise SystemExit('Cloud publication access is not configured')
+              class NoRedirect(HTTPRedirectHandler):
+                  def redirect_request(self, *args):
+                      return None
+              request = Request(origin + '/api/admin/predictions?part=version', headers={
+                  'X-Publication-Job-Authorization': 'Bearer ' + token,
+                  'OAI-Sites-Authorization': 'Bearer ' + service_token,
+                  'Accept': 'application/json'})
+              try:
+                  with build_opener(NoRedirect()).open(request, timeout=90) as response:
+                      payload = response.read(65537)
+                      header_version = response.headers.get('X-Publication-Version', '')
+                  if len(payload) > 65536:
+                      raise ValueError('metadata_too_large')
+                  version = json.loads(payload).get('publication_version')
+                  if not isinstance(version, str) or not re.fullmatch(r'[a-f0-9]{64}', version) or header_version != version:
+                      raise ValueError('version_mismatch')
+              except Exception:
+                  raise SystemExit('Could not resolve the successful cloud publication version') from None
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'publication_version={version}\njob_id={job_id}\nprepare_mode={mode}\n')
+          print(json.dumps({'publication_version': version, 'job_id': job_id, 'prepare_mode': mode}))
+          PY
   prepare:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.prepare_mode == 'release' || inputs.prepare_mode == 'buckets' || inputs.prepare_mode == 'validate') }}
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      publication_version: ${{ steps.prepare.outputs.publication_version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Run independent cloud preparation job
+        id: prepare
         env:
           CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
           PUBLICATION_JOB_TOKEN: ${{ secrets.XR_PUBLICATION_JOB_TOKEN }}
           SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
-          CLOUD_JOB_ID: ${{ inputs.job_id }}
-          CLOUD_PUBLICATION_VERSION: ${{ inputs.publication_version }}
-          CLOUD_PREPARE_MODE: ${{ inputs.prepare_mode }}
+          CLOUD_JOB_ID: ${{ needs.resolve.outputs.job_id }}
+          CLOUD_PUBLICATION_VERSION: ${{ needs.resolve.outputs.publication_version }}
+          CLOUD_PREPARE_MODE: ${{ needs.resolve.outputs.prepare_mode }}
           CLOUD_SOURCE_BUILD_ID: ${{ inputs.source_build_id }}
         run: |
           args=(--job-id "$CLOUD_JOB_ID" --version "$CLOUD_PUBLICATION_VERSION" --mode "$CLOUD_PREPARE_MODE")
@@ -56,9 +131,34 @@ jobs:
             args+=(--source-build-id "$CLOUD_SOURCE_BUILD_ID")
           fi
           python scripts/github-pages-cloud-job.py "${args[@]}"
+          echo "publication_version=$CLOUD_PUBLICATION_VERSION" >> "$GITHUB_OUTPUT"
+  predict:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.prepare_mode == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      publication_version: ${{ steps.predict.outputs.publication_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install prediction runtime
+        run: python -m pip install numpy==2.2.2
+      - name: Run registered predictions for the fixed publication
+        id: predict
+        env:
+          CLOUD_SITE_URL: ${{ vars.CLOUD_SITE_URL }}
+          PUBLICATION_JOB_TOKEN: ${{ secrets.XR_PUBLICATION_JOB_TOKEN }}
+          SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
+          CLOUD_PUBLICATION_VERSION: ${{ needs.resolve.outputs.publication_version }}
+        run: |
+          python scripts/run_predictions.py --version "$CLOUD_PUBLICATION_VERSION"
+          echo "publication_version=$CLOUD_PUBLICATION_VERSION" >> "$GITHUB_OUTPUT"
   build:
-    needs: prepare
-    if: ${{ !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') && inputs.prepare_mode != 'buckets' && inputs.prepare_mode != 'validate' }}
+    needs: [resolve, prepare, predict]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.prepare.result == 'success' && needs.predict.result == 'success' && needs.resolve.outputs.prepare_mode == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Separate build attempts; deploy-only retries reuse the recorded build output.
@@ -73,6 +173,24 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Verify preparation and predictions use the resolved publication
+        env:
+          CLOUD_PUBLICATION_VERSION: ${{ needs.resolve.outputs.publication_version }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PREPARE_PUBLICATION_VERSION: ${{ needs.prepare.outputs.publication_version }}
+          PREDICT_PUBLICATION_VERSION: ${{ needs.predict.outputs.publication_version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          version = os.environ['CLOUD_PUBLICATION_VERSION']
+          if not re.fullmatch(r'[a-f0-9]{64}', version):
+              raise SystemExit('Resolved publication version is invalid')
+          if os.environ['PREDICT_PUBLICATION_VERSION'] != version:
+              raise SystemExit('Prediction publication version does not match')
+          if os.environ['PREPARE_RESULT'] == 'success' and os.environ['PREPARE_PUBLICATION_VERSION'] != version:
+              raise SystemExit('Preparation publication version does not match')
+          PY
       - name: Restore public avatar packages
         uses: actions/cache@v5
         with:
@@ -86,12 +204,9 @@ jobs:
           GITHUB_PUBLICATION_TOKEN: ${{ secrets.XR_PUBLICATION_TOKEN }}
           SITES_SERVICE_ACCESS_TOKEN: ${{ secrets.SITES_SERVICE_ACCESS_TOKEN }}
           PAGES_SOURCE_DIR: ${{ vars.PAGES_SOURCE_DIR || '.' }}
-          CLOUD_PUBLICATION_VERSION: ${{ inputs.prepare_mode == 'release' && inputs.publication_version || '' }}
+          CLOUD_PUBLICATION_VERSION: ${{ needs.resolve.outputs.publication_version }}
         run: |
-          args=(--source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output --avatar-cache-dir "$RUNNER_TEMP/xr-public-avatar-packages")
-          if [[ -n "$CLOUD_PUBLICATION_VERSION" ]]; then
-            args+=(--version "$CLOUD_PUBLICATION_VERSION")
-          fi
+          args=(--source-dir "$PAGES_SOURCE_DIR" --output-dir cloud-pages-output --avatar-cache-dir "$RUNNER_TEMP/xr-public-avatar-packages" --version "$CLOUD_PUBLICATION_VERSION")
           python scripts/github-pages-cloud-publish.py "${args[@]}"
       - uses: actions/upload-pages-artifact@v5
         with:

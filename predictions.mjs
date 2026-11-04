@@ -11,7 +11,7 @@ const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%`
 
 /** Mount the three prediction pages; the site's router owns visibility and title. */
 export function mountPredictions(container, {
-  getManifest = () => null, dataUrl = './predictions/monthly-202611.json', onDataLoaded = () => {}, avatarBase = './',
+  getManifest = () => null, manifestUrl = './predictions/index.json', onDataLoaded = () => {}, avatarBase = './',
 } = {}) {
   container.innerHTML = `
     <header class="prediction-intro">
@@ -32,7 +32,7 @@ export function mountPredictions(container, {
         <p class="prediction-note" data-prediction-note></p>
         <div class="prediction-controls">
           <label class="prediction-search"><span>搜索牌手</span><input type="search" data-prediction-search placeholder="输入牌手昵称" autocomplete="off"></label>
-          <label><span>分组</span><select data-prediction-group><option value="">全部五组</option></select></label>
+          <label><span>分组</span><select data-prediction-group><option value="">全部分组</option></select></label>
           <label><span>排序</span><select data-prediction-sort><option value="display_rating">等级分 ↓</option><option value="promotion_probability">升级概率 ↓</option><option value="retention_probability">保级概率 ↓</option><option value="relegation_probability">降级概率 ↓</option><option value="mean_rank">预计名次 ↑</option></select></label>
           <label><span>每页</span><select data-prediction-size><option>50</option><option>100</option><option>200</option></select></label>
         </div>
@@ -55,7 +55,9 @@ export function mountPredictions(container, {
     'monthly', 'note', 'search', 'group', 'sort', 'size', 'result', 'players', 'prev', 'next',
     'page', 'swiss-blank'].map(key => [key, find(key)]));
   let data = null;
-  let pending = null;
+  let catalogue = null;
+  let cataloguePending = null;
+  const snapshots = new Map();
   let manifest = null;
   let current = 'monthly';
   let sequence = 0;
@@ -143,63 +145,131 @@ export function mountPredictions(container, {
     ui.next.disabled = page >= pages - 1;
   }
 
-  async function load() {
-    if (data) return data;
-    if (!pending) pending = fetch(dataUrl).then(response => {
-      if (!response.ok) throw new Error('Prediction response failed');
-      return response.json();
-    }).then(value => {
-      if (value.schema_version !== 'xinrui-predictions-v1' || value.event !== 'monthly'
+  async function readJSON(url) {
+    const response = await fetch(url, { cache: 'no-cache' });
+    if (!response.ok) throw new Error('Prediction response failed');
+    return response.json();
+  }
+
+  async function loadCatalogue() {
+    if (catalogue) return catalogue;
+    if (!cataloguePending) cataloguePending = readJSON(manifestUrl).then(value => {
+      if (value.schema_version !== 'xinrui-prediction-manifest-v1'
+        || typeof value.publication_version !== 'string' || !Array.isArray(value.items)
+        || value.items.some(item => !item || typeof item.id !== 'string'
+          || typeof item.family !== 'string' || typeof item.edition !== 'string'
+          || typeof item.status !== 'string')) throw new Error('Prediction manifest mismatch');
+      catalogue = value;
+      return value;
+    }).catch(error => { cataloguePending = null; throw error; });
+    return cataloguePending;
+  }
+
+  function latestItem(items, family) {
+    return items.filter(item => item.family === family).sort((a, b) =>
+      Number(b.current === true) - Number(a.current === true)
+      || b.edition.localeCompare(a.edition, 'en', { numeric: true })
+      || b.id.localeCompare(a.id))[0];
+  }
+
+  function editionLabel(edition) {
+    return /^\d{6}$/.test(edition)
+      ? `${edition.slice(0, 4)} 年 ${Number(edition.slice(4))} 月` : edition;
+  }
+
+  async function loadSnapshot(item, index) {
+    if (typeof item.path !== 'string' || !/^predictions\/[A-Za-z0-9][A-Za-z0-9._/-]*\.json$/.test(item.path)
+      || item.path.split('/').some(part => part === '..' || part === '.')) throw new Error('Prediction path mismatch');
+    const url = new URL(item.path, new URL(avatarBase, document.baseURI)).href;
+    const key = `${index.publication_version}:${url}`;
+    if (!snapshots.has(key)) snapshots.set(key, readJSON(url).then(value => {
+      if (value.schema_version !== 'xinrui-predictions-v1' || value.event !== item.family
+        || value.edition !== item.edition || value.publication_version !== index.publication_version
         || !Array.isArray(value.players) || !Array.isArray(value.groups)) throw new Error('Prediction format mismatch');
-      data = value;
-      groupMap = new Map(value.groups.map(group => [group.id, group]));
-      for (const group of value.groups) {
-        const option = document.createElement('option');
-        option.value = group.id;
-        option.textContent = `${group.name}（${format(group.count, 0)} 人）`;
-        ui.group.append(option);
-      }
-      return data;
-    }).catch(error => { pending = null; throw error; });
-    return pending;
+      return value;
+    }).catch(error => { snapshots.delete(key); throw error; }));
+    return snapshots.get(key);
+  }
+
+  function installSnapshot(value) {
+    if (data === value) return;
+    data = value;
+    page = 0;
+    ui.search.value = '';
+    groupMap = new Map(value.groups.map(group => [group.id, group]));
+    const allGroups = document.createElement('option');
+    allGroups.value = '';
+    allGroups.textContent = '全部分组';
+    ui.group.replaceChildren(allGroups);
+    for (const group of value.groups) {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = `${group.name}（${format(group.count, 0)} 人）`;
+      ui.group.append(option);
+    }
+    ui.group.value = '';
   }
 
   async function show(kind = 'monthly') {
     current = Object.hasOwn(TITLES, kind) ? kind : 'monthly';
+    const family = current;
     const turn = ++sequence;
-    ui.title.textContent = TITLES[current];
-    ui.description.textContent = current === 'monthly'
-      ? '根据最新等级分和已完成轮次，估计升、保、降级概率。' : '正在读取赛事进度…';
+    ui.title.textContent = TITLES[family];
+    ui.description.textContent = '正在读取赛事进度…';
     for (const link of container.querySelectorAll('[data-prediction-link]')) {
-      const active = link.dataset.predictionLink === current;
+      const active = link.dataset.predictionLink === family;
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
     ui.edition.textContent = '';
     ui.monthly.hidden = true;
-    ui.loading.hidden = true;
+    ui.loading.hidden = false;
     ui.error.hidden = true;
-    ui['swiss-blank'].hidden = current === 'monthly';
+    ui['swiss-blank'].hidden = true;
     ui['swiss-blank'].textContent = '';
-    ui.loading.hidden = Boolean(data);
     try {
-      await load();
+      const index = await loadCatalogue();
       if (turn !== sequence) return;
-      if (current !== 'monthly') {
-        const event = data.event_statuses?.[current];
-        if (event?.status === 'complete') {
-          ui.description.textContent = '本届赛事已结束。';
-          ui.edition.textContent = `${event.edition.slice(0, 4)} 年 ${Number(event.edition.slice(4))} 月`;
-          ui['swiss-blank'].textContent = `积分赛已完成 ${format(event.completed_swiss_rounds, 0)} 轮，剩余 ${format(event.remaining_swiss_rounds, 0)} 轮，无需模拟。`;
+      const item = latestItem(index.items, family);
+      if (!item) {
+        ui.description.textContent = '暂无已发布预测。';
+        return;
+      }
+      ui.edition.textContent = editionLabel(item.edition);
+      if (item.status === 'complete') {
+        ui.description.textContent = '本届赛事已结束。';
+        const completed = item.completed_swiss_rounds ?? item.completed_rounds;
+        const remaining = item.remaining_swiss_rounds ?? item.remaining_rounds ?? 0;
+        ui['swiss-blank'].hidden = false;
+        ui['swiss-blank'].textContent = Number.isFinite(completed)
+          ? `积分赛已完成 ${format(completed, 0)} 轮，剩余 ${format(remaining, 0)} 轮，无需模拟。`
+          : '本届赛事已结束，无需模拟。';
+        return;
+      }
+      if (!item.path) {
+        if (item.status === 'unavailable') {
+          ui.description.textContent = '本届历史资料不完整，暂无预测。';
+          const progress = [
+            ['已完成', item.completed_rounds ?? item.completed_swiss_rounds],
+            ['总计', item.total_rounds ?? item.total_swiss_rounds],
+            ['剩余', item.remaining_rounds ?? item.remaining_swiss_rounds],
+          ].filter(([, rounds]) => Number.isFinite(rounds))
+            .map(([label, rounds]) => `${label} ${format(rounds, 0)} 轮`);
+          ui['swiss-blank'].hidden = false;
+          ui['swiss-blank'].textContent = progress.length ? `${progress.join('，')}。` : '现有历史资料不足以生成预测。';
         } else {
-          ui.description.textContent = '暂未启用';
+          ui.description.textContent = '预测尚未发布。';
         }
         return;
       }
-      ui.edition.textContent = `${data.edition.slice(0, 4)} 年 ${Number(data.edition.slice(4))} 月 · ${format(data.players.length, 0)} 人`;
-      const remaining = data.remaining_rounds ?? 9;
-      const completed = data.completed_rounds ?? 0;
+      const value = await loadSnapshot(item, index);
+      if (turn !== sequence) return;
+      installSnapshot(value);
+      ui.description.textContent = '根据最新等级分和已完成轮次，估计升、保、降级概率。';
+      ui.edition.textContent = `${editionLabel(data.edition)} · ${format(data.players.length, 0)} 人`;
+      const remaining = data.remaining_rounds;
+      const completed = data.completed_rounds;
       const cutoff = data.score_cutoff || data.rating_cutoff;
       const pairing = data.next_round_pairings === 'approximate'
         ? '后续按累计 VP 邻位近似编排并避免重遇。'
@@ -225,6 +295,9 @@ export function mountPredictions(container, {
   for (const key of ['group', 'sort', 'size']) ui[key].addEventListener('change', () => { page = 0; renderRows(); });
   ui.prev.addEventListener('click', () => { page--; renderRows(); });
   ui.next.addEventListener('click', () => { page++; renderRows(); });
-  ui.retry.addEventListener('click', () => show(current));
+  ui.retry.addEventListener('click', () => {
+    catalogue = null; cataloguePending = null; snapshots.clear();
+    return show(current);
+  });
   return { show, setManifest(value) { manifest = value; renderRows(); } };
 }

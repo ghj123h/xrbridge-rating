@@ -13,7 +13,7 @@ const predictions = mountPredictions($('predictions-view'), {
   getManifest: () => state.manifest,
   onDataLoaded(data) {
     const target = parseRoute(location.hash);
-    if (target.view === 'predictions' && target.kind === 'monthly') {
+    if (target.view === 'predictions' && target.kind === data.event && typeof data.rating_cutoff === 'string') {
       $('header-update').textContent = `数据截至 ${shiftDay(data.rating_cutoff.slice(0, 10), -1)}`;
     }
   },

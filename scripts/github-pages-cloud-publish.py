@@ -26,7 +26,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 BUCKET_COUNT = 128
 FRONTEND_FILES = ('index.html', 'app.js', 'player-name.js', 'rating-core.mjs', 'score-chart.mjs', 'styles.css',
-                  'predictions.mjs', 'predictions.css', 'predictions/monthly-202611.json')
+                  'predictions.mjs', 'predictions.css')
 PLAYER_FIELDS = {'id', 'bucket', 'avatar', 'nickname', 'display_rating', 'rating_deviation', 'provisional',
                  'rated_board_count', 'rated_match_count', 'rating_tier', 'last_rated_day',
                  'peak_display_rating', 'gain_1d', 'gain_7d', 'gain_30d', 'delta_1d', 'delta_7d',
@@ -44,6 +44,9 @@ VERSION = re.compile(r'[a-f0-9]{64}\Z')
 AVATAR = re.compile(r'avatars/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)\Z')
 PHONE = re.compile(r'1[3-9][0-9]{9}\Z')
 PUBLIC_PARTS = frozenset(('release', 'package'))
+PREDICTION_PARTS = {'prediction_manifest': 'manifest', 'prediction_file': 'file'}
+PREDICTION_PATH = re.compile(r'predictions/[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.json\Z')
+MAX_PREDICTION_FILE = 16 * 1024 * 1024
 PACKAGE_NAME = re.compile(r'(?:metadata|data-\d{3}|avatars-\d{5,})\.tar\Z')
 MAX_PACKAGE = 16 * 1024 * 1024
 # Keep diagnostics limited to exact public-route messages. SQL, response bodies,
@@ -99,7 +102,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 class CloudRequestError(PublicationError):
     def __init__(self, part, bucket, status, error_code, reason=None, code=None, resource_kind=None):
-        self.part = part if part in PUBLIC_PARTS else 'invalid'
+        self.part = part if part in PUBLIC_PARTS or part in PREDICTION_PARTS else 'invalid'
         self.bucket = bucket if type(bucket) is int and 0 <= bucket < BUCKET_COUNT else None
         self.http_status = status if type(status) is int and 100 <= status < 600 else None
         self.safe_error_code = error_code if error_code in SAFE_ERROR_CODE_VALUES else 'UNCLASSIFIED_UPSTREAM_ERROR'
@@ -287,6 +290,7 @@ class CloudPublicationClient:
         if not token:
             raise PublicationError('GITHUB_PUBLICATION_TOKEN is required')
         self.endpoint = site_url.rstrip('/') + '/api/admin/github-publication'
+        self.predictions_endpoint = site_url.rstrip('/') + '/api/admin/predictions'
         self.opener = build_opener(NoRedirect())
         self.headers = {'X-Publication-Authorization': 'Bearer ' + token}
         # Platform private-Site access is separate from the application read-only token.
@@ -294,14 +298,15 @@ class CloudPublicationClient:
             self.headers['OAI-Sites-Authorization'] = 'Bearer ' + service_token
 
     def _fetch(self, part, *, version=None, name=None, maximum=32 * 1024 * 1024):
-        if part not in PUBLIC_PARTS:
+        if part not in PUBLIC_PARTS and part not in PREDICTION_PARTS:
             raise PublicationError('Only ready release downloads are supported')
-        parameters = {'part': part}
+        parameters = {'part': PREDICTION_PARTS.get(part, part)}
         if version is not None:
             parameters['version'] = version
         if name is not None:
             parameters['name'] = name
-        request = Request(self.endpoint + '?' + urlencode(parameters), headers=self.headers)
+        endpoint = self.predictions_endpoint if part in PREDICTION_PARTS else self.endpoint
+        request = Request(endpoint + '?' + urlencode(parameters), headers=self.headers)
         for attempt in range(3):
             try:
                 with self.opener.open(request, timeout=120) as response:
@@ -314,7 +319,7 @@ class CloudPublicationClient:
                     payload = response.read(maximum + 1)
                     if len(payload) > maximum:
                         raise PublicationError('Public export response is too large')
-                    if part == 'package':
+                    if part in ('package', 'prediction_file'):
                         return payload, actual
                     data = json.loads(payload)
                     finite_values(data)
@@ -358,6 +363,95 @@ class CloudPublicationClient:
             raise PublicationError('Invalid publication version')
         payload, _ = self._fetch('package', version=version, name=package['name'], maximum=package['size'])
         return payload
+
+    def fetch_prediction_manifest(self, *, version):
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            raise PublicationError('Invalid publication version')
+        value, _ = self._fetch('prediction_manifest', version=version)
+        return validate_prediction_manifest(value, version=version)
+
+    def fetch_prediction_file(self, item, *, version):
+        validate_prediction_file_info(item)
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            raise PublicationError('Invalid publication version')
+        value, _ = self._fetch('prediction_file', version=version, name=item['path'], maximum=item['size'])
+        return value
+
+
+def validate_prediction_file_info(value):
+    object_fields(value, {'path', 'size', 'sha256'}, 'Prediction file')
+    path = value['path']
+    if (not isinstance(path, str) or not PREDICTION_PATH.fullmatch(path) or '..' in path
+            or path == 'predictions/index.json' or type(value['size']) is not int
+            or not 0 < value['size'] <= MAX_PREDICTION_FILE
+            or not isinstance(value['sha256'], str) or not VERSION.fullmatch(value['sha256'])):
+        raise PublicationError('Invalid prediction file scope, size or SHA-256')
+
+
+def validate_prediction_manifest(value, *, version):
+    required = {'schema_version', 'publication_version', 'snapshot_id', 'rating_cutoff',
+                'rating_generated_at', 'generated_at', 'iterations', 'items', 'files'}
+    if (not isinstance(value, dict) or not required <= set(value)
+            or value['schema_version'] != 'xinrui-prediction-manifest-v1'
+            or value['publication_version'] != version or type(value['iterations']) is not int
+            or value['iterations'] != 10000 or not isinstance(value['items'], list) or not value['items']
+            or not isinstance(value['files'], list)):
+        raise PublicationError('Prediction manifest is incompatible with this publication')
+    for key in ('snapshot_id', 'rating_cutoff', 'rating_generated_at', 'generated_at'):
+        if not isinstance(value[key], str) or not value[key]:
+            raise PublicationError('Prediction manifest identity or timestamps are missing')
+    finite_values(value)
+    paths, referenced, identifiers = set(), set(), set()
+    for item in value['files']:
+        validate_prediction_file_info(item)
+        if item['path'] in paths:
+            raise PublicationError('Duplicate prediction file path')
+        paths.add(item['path'])
+    for item in value['items']:
+        if (not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key]
+                for key in ('id', 'family', 'edition', 'status')) or item['id'] in identifiers
+                or item['status'] not in ('forecast', 'complete', 'unavailable')
+                or item['status'] == 'forecast' and 'path' not in item):
+            raise PublicationError('Prediction item identity is invalid or duplicated')
+        identifiers.add(item['id'])
+        if 'path' in item:
+            if not isinstance(item['path'], str) or item['path'] not in paths or item['path'] in referenced:
+                raise PublicationError('Prediction item file references are inconsistent')
+            referenced.add(item['path'])
+    if referenced != paths:
+        raise PublicationError('Prediction manifest contains unreferenced files')
+    return value
+
+
+def download_predictions(client, staging, *, version, rating_manifest):
+    manifest = validate_prediction_manifest(client.fetch_prediction_manifest(version=version), version=version)
+    if (manifest['rating_cutoff'] != rating_manifest['cutoff']
+            or manifest['rating_generated_at'] != rating_manifest['generated_at']):
+        raise PublicationError('Prediction manifest differs from the rating publication metadata')
+    progress = ExportProgress('predictions', len(manifest['files']))
+    for item in manifest['files']:
+        body = client.fetch_prediction_file(item, version=version)
+        if (not isinstance(body, bytes) or len(body) != item['size']
+                or hashlib.sha256(body).hexdigest() != item['sha256']):
+            raise PublicationError('Prediction file size or SHA-256 differs from its manifest')
+        try:
+            value = json.loads(body)
+        except (UnicodeError, ValueError):
+            raise PublicationError('Prediction file contains invalid JSON') from None
+        finite_values(value)
+        if (not isinstance(value, dict) or value.get('publication_version') != version
+                or value.get('snapshot_id') != manifest['snapshot_id']
+                or value.get('rating_cutoff') != manifest['rating_cutoff']
+                or value.get('rating_generated_at') != manifest['rating_generated_at']):
+            raise PublicationError('Prediction file differs from its publication or input snapshot')
+        target = staging / item['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        progress.advance()
+    target = staging / 'predictions/index.json'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(manifest, ensure_ascii=False, separators=(',', ':'), allow_nan=False), encoding='utf-8')
+    progress.finish()
 
 
 def unpack_package(payload, package, staging, written):
@@ -567,6 +661,7 @@ def build_bundle(client, source_dir, output_dir, *, workers=4, avatar_cache_dir=
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / name, target)
         (staging / '.nojekyll').write_text('', encoding='utf-8')
+        download_predictions(client, staging, version=version, rating_manifest=release['manifest'])
         progress = ExportProgress('release_packages', len(release['packages']))
         def download(package):
             payload = cached_avatar_package(cache, package)
