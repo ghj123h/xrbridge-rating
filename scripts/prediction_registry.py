@@ -23,6 +23,8 @@ PREDICTION_REGISTRY = (
             {"id": "b-b", "name": "乙级B组", "title_pattern": r"乙级\s*[BbＢｂ]", "boards": 12, "promote": 200, "stay": 500},
             {"id": "c-a", "name": "丙级A组", "title_pattern": r"丙级\s*[AaＡａ]", "boards": 8, "promote": 300, "stay": 400},
             {"id": "c-b", "name": "丙级B组", "title_pattern": r"丙级\s*[BbＢｂ]", "boards": 8, "promote": 300, "stay": 400},
+            {"id": "u-a", "name": "无等级A组", "title_pattern": r"无等级\s*[AaＡａ]", "boards": 8, "promote": 300, "relegate": 0},
+            {"id": "u-b", "name": "无等级B组", "title_pattern": r"无等级\s*[BbＢｂ]", "boards": 8, "promote": 300, "relegate": 0},
         ],
     },
     {
