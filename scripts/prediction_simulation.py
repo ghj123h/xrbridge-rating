@@ -133,6 +133,7 @@ def simulate_group(
     initial_scores=None,
     prior_opponents=None,
     initial_byes=None,
+    qualify=None,
 ):
     """Return per-player forecasts and an audit summary, entirely in memory.
 
@@ -156,6 +157,8 @@ def simulate_group(
     iterations = _positive_integer(iterations, "iterations")
     batch_size = _positive_integer(batch_size, "batch_size")
     promote = _positive_integer(promote, "promote", allow_zero=True)
+    if qualify is not None:
+        qualify = _positive_integer(qualify, 'qualify', allow_zero=True)
     relegate = _positive_integer(relegate, "relegate", allow_zero=True)
     players = list(players)
     count = len(players)
@@ -241,6 +244,7 @@ def simulate_group(
 
     rng = np.random.default_rng(seed)
     promotion_counts = np.zeros(count, dtype=np.int64)
+    qualification_counts = np.zeros(count, dtype=np.int64)
     relegation_counts = np.zeros(count, dtype=np.int64)
     rank_sums = np.zeros(count, dtype=np.int64)
     score_sums = np.zeros(count, dtype=float)
@@ -293,6 +297,8 @@ def simulate_group(
         ranks = np.empty_like(ordering)
         np.put_along_axis(ranks, ordering, np.arange(1, count + 1)[None, :], axis=1)
         promotion_counts += np.sum(ranks <= promote, axis=0)
+        if qualify is not None:
+            qualification_counts += np.sum(ranks <= qualify, axis=0)
         relegation_counts += np.sum(ranks > count - relegate, axis=0)
         rank_sums += np.sum(ranks, axis=0)
         score_sums += np.sum(scores, axis=0)
@@ -324,6 +330,7 @@ def simulate_group(
             "rd": player.get("rd"),
             "provisional": player.get("provisional"),
             "promote_probability": probabilities["promote"],
+            **({'qualification_probability': float(qualification_counts[index] / iterations)} if qualify is not None else {}),
             "stay_probability": probabilities["stay"],
             "relegate_probability": probabilities["relegate"],
             "mean_rank": float(rank_sums[index] / iterations),

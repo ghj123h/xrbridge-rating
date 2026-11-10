@@ -65,7 +65,7 @@ def validate_public(value):
     if len(set(identities)) != len(identities):
         raise ValueError("prediction_public_player_duplicate")
     for group in groups:
-        if (set(group) != GROUP_FIELDS or not SAFE_ID.fullmatch(group["id"])
+        if (not GROUP_FIELDS <= set(group) or set(group) - GROUP_FIELDS - {'qualify', 'promotion_applicable', 'relegation_applicable'} or not SAFE_ID.fullmatch(group["id"])
                 or any(type(group[key]) is not int or group[key] < 0 for key in ("count", "promote", "stay", "relegate"))
                 or sum(group[key] for key in ("promote", "stay", "relegate")) != group["count"]):
             raise ValueError("prediction_public_quota_invalid")
@@ -76,15 +76,24 @@ def validate_public(value):
                              ("relegation_probability", "relegate")):
             if not math.isclose(sum(person[field] for person in cohort), group[quota], abs_tol=1e-6):
                 raise ValueError("prediction_public_quota_not_conserved")
+        for flag in ('promotion_applicable', 'relegation_applicable'):
+            if flag in group and type(group[flag]) is not bool:
+                raise ValueError('prediction_public_applicability_invalid')
+        if 'qualify' in group:
+            if type(group['qualify']) is not int or not 0 <= group['qualify'] <= group['count'] or not math.isclose(
+                    sum(person.get('qualification_probability', -1) for person in cohort), group['qualify'], abs_tol=1e-6):
+                raise ValueError('prediction_public_qualification_invalid')
     counts = {group["id"]: group["count"] for group in groups}
     for person in players:
-        if (set(person) != PLAYER_FIELDS or not PUBLIC_ID.fullmatch(person["id"])
+        if (not PLAYER_FIELDS <= set(person) or set(person) - PLAYER_FIELDS - {'qualification_probability'} or not PUBLIC_ID.fullmatch(person["id"])
                 or person["group"] not in counts or PHONE.fullmatch(person["nickname"])
                 or not finite(person["display_rating"]) or not finite(person["rating_deviation"])
                 or person["rating_deviation"] < 0 or type(person["provisional"]) is not bool
                 or person["avatar"] is not None and not AVATAR.fullmatch(person["avatar"])):
             raise ValueError("prediction_public_player_invalid")
         probabilities = [person[key] for key in ("promotion_probability", "retention_probability", "relegation_probability")]
+        if 'qualification_probability' in person and (not finite(person['qualification_probability']) or not 0 <= person['qualification_probability'] <= 1):
+            raise ValueError('prediction_public_qualification_invalid')
         if any(not finite(value) or not 0 <= value <= 1 for value in probabilities) or not math.isclose(sum(probabilities), 1, abs_tol=1e-10):
             raise ValueError("prediction_public_probability_invalid")
         count = counts[person["group"]]

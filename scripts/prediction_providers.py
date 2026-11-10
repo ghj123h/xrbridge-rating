@@ -7,6 +7,7 @@ import math
 
 from prediction_public import finite, public_identity, validate_public
 from prediction_simulation import simulate_group
+from prediction_registry import probability_applicability
 
 
 def integer(value, *, minimum=0):
@@ -126,21 +127,26 @@ def forecast(module, bundle, spec, *, generated_at, simulator=simulate_group):
         if relegate < 0:
             raise ValueError("prediction_active_roster_below_fixed_quotas")
         boards = group["boards"]
+        qualify = group.get('qualify')
         seed = int.from_bytes(hashlib.sha256((bundle["publication_version"] + bundle["snapshot_id"] +
             module["id"] + group_id).encode()).digest()[:4], "big")
         modeled = [{"uid": person["uid"], "nickname": "", "rating": person["rating"],
             "rd": person["rating_deviation"], "provisional": person["provisional"]} for person in people]
         simulated = simulator(modeled, None, total - done, boards, promote, relegate, iterations=10000,
-            seed=seed, initial_scores=scores, prior_opponents=opponents, initial_byes=byes)
+            seed=seed, initial_scores=scores, prior_opponents=opponents, initial_byes=byes,
+            **({'qualify': qualify} if qualify is not None else {}))
         outcomes = {person["uid"]: person for person in simulated["players"]}
         value["groups"].append({"id": group_id, "name": group["name"], "count": count,
-            "boards": boards, "promote": promote, "stay": stay, "relegate": relegate})
+            "boards": boards, "promote": promote, "stay": stay, "relegate": relegate,
+            **probability_applicability(module['family'], group),
+            **({'qualify': min(qualify, count)} if qualify is not None else {})})
         for person in people:
             outcome = outcomes[person["uid"]]
             value["players"].append({**public_identity(person, group_id), "avatar": person.get("avatar"),
                 "display_rating": person["display_rating"], "rating_deviation": person["rating_deviation"],
                 "provisional": person["provisional"], "rating_tier": person.get("rating_tier"),
                 "promotion_probability": outcome["promote_probability"], "retention_probability": outcome["stay_probability"],
+                **({'qualification_probability': outcome['qualification_probability']} if qualify is not None else {}),
                 "relegation_probability": outcome["relegate_probability"], "mean_rank": outcome["mean_rank"],
                 "rank_p05": outcome["rank_90_interval"][0], "rank_p95": outcome["rank_90_interval"][1]})
         value["withdrawn_players"].extend(public_identity(person, group_id) for person in group.get("withdrawn_players", []))

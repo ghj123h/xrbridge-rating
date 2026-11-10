@@ -69,6 +69,8 @@ def build_results(bundle, *, version, registry=None, generated_at=None, simulato
     registry = get_prediction_registry() if registry is None else registry
     validate_bundle(bundle, version, registry)
     generated_at = generated_at or datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")
+    if 'stage_context' in bundle:
+        return build_stage_results(bundle, registry, generated_at=generated_at, simulator=simulator)
     documents = []
     for module in bundle["modules"]:
         spec = get_prediction_spec(module["family"], registry)
@@ -113,9 +115,46 @@ def build_results(bundle, *, version, registry=None, generated_at=None, simulato
     return {"manifest": manifest, "files": files}
 
 
+def build_stage_results(bundle, registry, *, generated_at, simulator=None):
+    from copy import deepcopy
+    context=bundle['stage_context']
+    manifest={'schema_version':'xinrui-prediction-manifest-v2','publication_version':bundle['publication_version'],
+              'snapshot_id':bundle['snapshot_id'],'rating_cutoff':bundle['rating_cutoff'],
+              'rating_generated_at':bundle['rating_generated_at'],'generated_at':generated_at,'iterations':10000,
+              'edition':context['edition'],'status_as_of':context['status_as_of'],'items':deepcopy(context['items']),'files':[]}
+    files=[]
+    for item in manifest['items']:
+        for stage,descriptor in item['stages'].items():
+            if descriptor['status']!='ongoing':
+                continue
+            module=next((m for m in bundle['modules'] if m['family']==item['family'] and m['edition']==item['edition']),None)
+            if module is None:
+                raise PredictionError('prediction_ongoing_input_missing')
+            spec=get_prediction_spec(item['family'],registry)
+            if stage!='swiss':
+                raise PredictionError('prediction_knockout_input_required')
+            options={'generated_at':generated_at}
+            if simulator is not None:
+                options['simulator']=simulator
+            if item['family'] in ('team','pair'):
+                spec=spec['swiss_prediction']
+            document=load_provider(spec)(module,bundle,spec,**options)
+            path=f"predictions/{item['id']}-{stage}.json"
+            content=json_text(document);raw=content.encode('utf-8')
+            descriptor['path']=path
+            files.append({'path':path,'content':content})
+            manifest['files'].append({'path':path,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+    return {'manifest':manifest,'files':files}
+
+
 def reusable_manifest(manifest, version, registry):
     if not manifest:
         return False
+    if manifest.get('schema_version')=='xinrui-prediction-manifest-v2':
+        return (manifest.get('publication_version')==version and {i.get('family') for i in manifest.get('items',[])}=={s['family'] for s in registry}
+                and all(set(i.get('stages',{}))=={'swiss','knockout'} and all(
+                    d.get('status') in ('not_started','ongoing','ended') and (d.get('status')!='ongoing' or isinstance(d.get('path'),str))
+                    for d in i['stages'].values()) for i in manifest['items']))
     if (manifest.get("schema_version") != "xinrui-prediction-manifest-v1"
             or manifest.get("publication_version") != version
             or not isinstance(manifest.get("snapshot_id"), str) or not VERSION.fullmatch(manifest["snapshot_id"])

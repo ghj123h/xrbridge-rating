@@ -392,7 +392,7 @@ def validate_prediction_manifest(value, *, version):
     required = {'schema_version', 'publication_version', 'snapshot_id', 'rating_cutoff',
                 'rating_generated_at', 'generated_at', 'iterations', 'items', 'files'}
     if (not isinstance(value, dict) or not required <= set(value)
-            or value['schema_version'] != 'xinrui-prediction-manifest-v1'
+            or value['schema_version'] not in ('xinrui-prediction-manifest-v1','xinrui-prediction-manifest-v2')
             or value['publication_version'] != version or type(value['iterations']) is not int
             or value['iterations'] != 10000 or not isinstance(value['items'], list) or not value['items']
             or not isinstance(value['files'], list)):
@@ -408,6 +408,21 @@ def validate_prediction_manifest(value, *, version):
             raise PublicationError('Duplicate prediction file path')
         paths.add(item['path'])
     for item in value['items']:
+        if value['schema_version']=='xinrui-prediction-manifest-v2':
+            if (not isinstance(item,dict) or set(item)!={'id','family','edition','stages'} or item['id'] in identifiers
+                    or set(item['stages'])!={'swiss','knockout'} or item['edition']!=value.get('edition')):
+                raise PublicationError('Prediction stage identity is invalid')
+            identifiers.add(item['id'])
+            for stage in item['stages'].values():
+                if stage.get('status') not in ('not_started','ongoing','ended'):
+                    raise PublicationError('Prediction stage status is invalid')
+                if stage['status']=='ongoing':
+                    if stage.get('path') not in paths or stage['path'] in referenced:
+                        raise PublicationError('Prediction stage file is missing')
+                    referenced.add(stage['path'])
+                elif 'path' in stage:
+                    raise PublicationError('Inactive prediction stage has a file')
+            continue
         if (not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key]
                 for key in ('id', 'family', 'edition', 'status')) or item['id'] in identifiers
                 or item['status'] not in ('forecast', 'complete', 'unavailable')

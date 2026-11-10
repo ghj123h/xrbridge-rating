@@ -1,4 +1,4 @@
-import './player-name.js';
+import { formatRating } from './rating-core.mjs';
 
 const TITLES = { monthly: '月赛预测', team: '团体赛预测', pair: '双人团预测' };
 const DEFAULT_COLORS = {
@@ -8,16 +8,21 @@ const DEFAULT_COLORS = {
 const format = (value, digits = 1) => Number.isFinite(value)
   ? value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
+export const beijingEdition = (date = new Date()) => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit',
+}).formatToParts(date).filter(part => ['year', 'month'].includes(part.type)).map(part => part.value).join('');
+export function probabilityText(value, applicable = true) { return applicable === false ? '-' : percent(value); }
 
 /** Mount the three prediction pages; the site's router owns visibility and title. */
 export function mountPredictions(container, {
   getManifest = () => null, manifestUrl = './predictions/index.json', onDataLoaded = () => {}, avatarBase = './',
+  now = () => new Date(),
 } = {}) {
   container.innerHTML = `
     <header class="prediction-intro">
       <p class="eyebrow"><span></span> THREE MAJOR EVENTS</p>
       <h1 data-prediction-title>月赛预测</h1>
-      <p data-prediction-description>根据现有等级分，估计升、保、降级概率。</p>
+      <p data-prediction-description></p>
     </header>
     <nav class="prediction-nav" aria-label="三大赛预测">
       <a href="#predictions/monthly" data-prediction-link="monthly">月赛预测</a>
@@ -29,31 +34,30 @@ export function mountPredictions(container, {
       <div class="prediction-message" data-prediction-loading role="status" hidden>正在读取预测…</div>
       <div class="prediction-message" data-prediction-error role="alert" hidden><p>预测暂时未能加载，请重试。</p><button type="button" class="button button-secondary" data-prediction-retry>重新加载</button></div>
       <div data-prediction-monthly hidden>
-        <p class="prediction-note" data-prediction-note></p>
         <div class="prediction-controls">
-          <label class="prediction-search"><span>搜索牌手</span><input type="search" data-prediction-search placeholder="输入牌手昵称" autocomplete="off"></label>
+          <label class="prediction-search"><span data-prediction-search-label>搜索牌手</span><input type="search" data-prediction-search placeholder="输入牌手昵称" autocomplete="off"></label>
           <label><span>分组</span><select data-prediction-group><option value="">全部分组</option></select></label>
           <label><span>排序</span><select data-prediction-sort><option value="display_rating">等级分 ↓</option><option value="promotion_probability">升级概率 ↓</option><option value="retention_probability">保级概率 ↓</option><option value="relegation_probability">降级概率 ↓</option><option value="mean_rank">预计名次 ↑</option></select></label>
           <label><span>每页</span><select data-prediction-size><option>50</option><option>100</option><option>200</option></select></label>
         </div>
         <p class="prediction-result" data-prediction-result aria-live="polite"></p>
-        <div class="table-scroll"><table class="prediction-table" aria-label="全部牌手升降保级概率">
-          <thead><tr><th scope="col">牌手</th><th scope="col">分组</th><th scope="col">等级分 / RD</th><th scope="col">升级</th><th scope="col">保级</th><th scope="col">降级</th><th scope="col">预计名次</th><th scope="col">90% 名次区间</th></tr></thead>
+        <div class="table-scroll"><table class="prediction-table" data-prediction-table aria-label="全部牌手升降保级概率">
+          <thead><tr data-prediction-columns><th scope="col">牌手</th><th scope="col">分组</th><th scope="col">等级分 / RD</th><th scope="col">升级</th><th scope="col">保级</th><th scope="col">降级</th><th scope="col">预计名次</th><th scope="col">90% 名次区间</th></tr></thead>
           <tbody data-prediction-players></tbody>
         </table></div>
-        <div class="pagination prediction-pagination"><span class="pagination-caption">保级指留在本级，不含升级；三项概率合计 100%。</span><div class="page-controls"><button type="button" class="pagination-button" data-prediction-prev aria-label="预测名单上一页">←</button><span data-prediction-page></span><button type="button" class="pagination-button" data-prediction-next aria-label="预测名单下一页">→</button></div></div>
+        <div class="pagination prediction-pagination"><div class="page-controls"><button type="button" class="pagination-button" data-prediction-prev aria-label="预测名单上一页">←</button><span data-prediction-page></span><button type="button" class="pagination-button" data-prediction-next aria-label="预测名单下一页">→</button></div></div>
       </div>
-      <div class="prediction-blank prediction-note" data-prediction-swiss-blank></div>
+      <div class="prediction-blank" data-prediction-swiss-blank></div>
     </section>
     <section class="panel prediction-section" aria-labelledby="prediction-knockout-title">
       <div class="panel-heading"><div class="section-title"><span class="section-kicker">KNOCKOUT STAGE</span><h2 id="prediction-knockout-title">淘汰赛预测</h2></div></div>
-      <div class="prediction-blank" aria-label="淘汰赛预测内容留空"></div>
+      <div class="prediction-blank" data-prediction-knockout></div>
     </section>`;
 
   const find = selector => container.querySelector(`[data-prediction-${selector}]`);
   const ui = Object.fromEntries(['title', 'description', 'edition', 'loading', 'error', 'retry',
-    'monthly', 'note', 'search', 'group', 'sort', 'size', 'result', 'players', 'prev', 'next',
-    'page', 'swiss-blank'].map(key => [key, find(key)]));
+    'monthly', 'search', 'group', 'sort', 'size', 'result', 'players', 'prev', 'next',
+    'page', 'swiss-blank', 'columns', 'search-label', 'table', 'knockout'].map(key => [key, find(key)]));
   let data = null;
   let catalogue = null;
   let cataloguePending = null;
@@ -63,6 +67,8 @@ export function mountPredictions(container, {
   let sequence = 0;
   let page = 0;
   let groupMap = new Map();
+  const teamSnapshot = value => value?.schema_version === 'xinrui-team-swiss-predictions-v1';
+  const rowsOf = value => teamSnapshot(value) ? value.teams : value.players;
 
   function playerColor(player) {
     if (player.provisional) return '#000000';
@@ -77,13 +83,47 @@ export function mountPredictions(container, {
     row.append(td);
     return td;
   }
+  function playerIdentity(player, {showRating = false} = {}) {
+    const identity = document.createElement('div');
+    identity.className = 'table-player';
+    const avatar = document.createElement('span');
+    avatar.className = 'player-avatar';
+    avatar.style.setProperty('--player-color', playerColor(player));
+    avatar.setAttribute('aria-hidden', 'true');
+    const initial = document.createElement('span');
+    initial.textContent = Array.from(player.nickname || '桥')[0];
+    avatar.append(initial);
+    if (typeof player.avatar === 'string' && /^avatars\/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)$/.test(player.avatar)) {
+      const image = document.createElement('img');
+      image.src = new URL(player.avatar, new URL(avatarBase, document.baseURI)).href;
+      image.alt = '';
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.setAttribute('data-player-avatar', '');
+      image.addEventListener('error', () => image.remove());
+      avatar.append(image);
+    }
+    const label = document.createElement('span');
+    label.className = 'prediction-player-label';
+    label.innerHTML = globalThis.PlayerName.markup(player.nickname || '未命名牌手', {
+      color: playerColor(player), rating: player.display_rating, provisional: player.provisional,
+      profile_url: `#player/${player.id}`,
+    }, {showRating});
+    identity.append(avatar, label);
+    return identity;
+  }
   function renderRows() {
     if (!data) return;
     const needle = ui.search.value.trim().toLocaleLowerCase();
-    const selected = data.players.filter(player => (!ui.group.value || player.group === ui.group.value)
-      && (!needle || player.nickname.toLocaleLowerCase().includes(needle)));
+    const teams = teamSnapshot(data);
+    const rows = rowsOf(data);
+    const selected = rows.filter(player => (!ui.group.value || player.group === ui.group.value)
+      && (!needle || (teams ? [player.name, ...player.members.map(member => member.nickname)] : [player.nickname])
+        .some(name => name.toLocaleLowerCase().includes(needle))));
     const key = ui.sort.value;
-    selected.sort((a, b) => (key === 'mean_rank' ? a[key] - b[key] : b[key] - a[key])
+    const applicable = row => key === 'promotion_probability' ? groupMap.get(row.group)?.promotion_applicable !== false
+      : key === 'relegation_probability' ? groupMap.get(row.group)?.relegation_applicable !== false : true;
+    selected.sort((a, b) => Number(applicable(b)) - Number(applicable(a)) || (key === 'mean_rank' ? a[key] - b[key] : b[key] - a[key])
       || a.id.localeCompare(b.id));
     const size = Number(ui.size.value);
     const pages = Math.max(1, Math.ceil(selected.length / size));
@@ -91,55 +131,44 @@ export function mountPredictions(container, {
     ui.players.replaceChildren();
     for (const player of selected.slice(page * size, (page + 1) * size)) {
       const tr = document.createElement('tr');
+      const group = groupMap.get(player.group);
+      if (teams) {
+        cell(tr, player.name, 'prediction-player prediction-team-name');
+        cell(tr, groupMap.get(player.group)?.name || '—', 'prediction-group-name');
+        const members = cell(tr, '', 'prediction-team-members');
+        for (const member of player.members) {
+          members.append(playerIdentity(member, {showRating: true}));
+        }
+        cell(tr, percent(player.qualification_probability), 'prediction-qualify');
+        cell(tr, probabilityText(player.promotion_probability, group?.promotion_applicable), 'prediction-up');
+        cell(tr, percent(player.retention_probability), 'prediction-stay');
+        cell(tr, probabilityText(player.relegation_probability, group?.relegation_applicable), 'prediction-down');
+        cell(tr, format(player.mean_rank));
+        cell(tr, `${format(player.rank_p05, 0)}–${format(player.rank_p95, 0)}`);
+        ui.players.append(tr);
+        continue;
+      }
       const name = cell(tr, '', 'prediction-player');
-      const identity = document.createElement('div');
-      identity.className = 'table-player';
-      const avatar = document.createElement('span');
-      avatar.className = 'player-avatar';
-      avatar.style.setProperty('--player-color', playerColor(player));
-      avatar.setAttribute('aria-hidden', 'true');
-      const initial = document.createElement('span');
-      initial.textContent = Array.from(player.nickname || '桥')[0];
-      avatar.append(initial);
-      if (typeof player.avatar === 'string' && /^avatars\/[a-f0-9]{24}\.(?:jpg|jpeg|png|gif|webp)$/.test(player.avatar)) {
-        const image = document.createElement('img');
-        image.src = new URL(player.avatar, new URL(avatarBase, document.baseURI)).href;
-        image.alt = '';
-        image.loading = 'lazy';
-        image.decoding = 'async';
-        image.setAttribute('data-player-avatar', '');
-        avatar.append(image);
-      }
-      const label = document.createElement('span');
-      label.className = 'prediction-player-label';
-      label.innerHTML = globalThis.PlayerName.markup(player.nickname || '未命名牌手', {
-        color: playerColor(player), rating: player.display_rating, provisional: player.provisional,
-        profile_url: `#player/${player.id}`,
-      });
-      if (player.provisional) {
-        const status = document.createElement('span');
-        status.className = 'prediction-provisional';
-        status.textContent = '暂定';
-        label.append(status);
-      }
-      identity.append(avatar, label);
-      name.append(identity);
+      name.append(playerIdentity(player));
       cell(tr, groupMap.get(player.group)?.name || '—', 'prediction-group-name');
-      cell(tr, `${format(player.display_rating)} / ${format(player.rating_deviation, 0)}`);
-      cell(tr, percent(player.promotion_probability), 'prediction-up');
+      cell(tr, `${formatRating(player.display_rating)} / ${format(player.rating_deviation, 0)}`);
+      cell(tr, percent(player.qualification_probability), 'prediction-qualify');
+      cell(tr, probabilityText(player.promotion_probability, group?.promotion_applicable), 'prediction-up');
       cell(tr, percent(player.retention_probability), 'prediction-stay');
-      cell(tr, percent(player.relegation_probability), 'prediction-down');
+      cell(tr, probabilityText(player.relegation_probability, group?.relegation_applicable), 'prediction-down');
       cell(tr, format(player.mean_rank));
       cell(tr, `${format(player.rank_p05, 0)}–${format(player.rank_p95, 0)}`);
       ui.players.append(tr);
     }
     if (!selected.length) {
       const tr = document.createElement('tr');
-      const td = cell(tr, '没有符合条件的牌手，试试其他昵称或分组。', 'prediction-empty');
-      td.colSpan = 8;
+      const td = cell(tr, teams ? '没有符合条件的队伍，试试其他队名、队员昵称或分组。'
+        : '没有符合条件的牌手，试试其他昵称或分组。', 'prediction-empty');
+      td.colSpan = 9;
       ui.players.append(tr);
     }
-    ui.result.textContent = `匹配 ${format(selected.length, 0)} 人 · 共 ${format(data.players.length, 0)} 人`;
+    const unit = teams ? '队' : '人';
+    ui.result.textContent = `匹配 ${format(selected.length, 0)} ${unit} · 共 ${format(rows.length, 0)} ${unit}`;
     ui.page.textContent = `第 ${page + 1} / ${pages} 页`;
     ui.prev.disabled = page === 0;
     ui.next.disabled = page >= pages - 1;
@@ -154,11 +183,11 @@ export function mountPredictions(container, {
   async function loadCatalogue() {
     if (catalogue) return catalogue;
     if (!cataloguePending) cataloguePending = readJSON(manifestUrl).then(value => {
-      if (value.schema_version !== 'xinrui-prediction-manifest-v1'
+      if (!['xinrui-prediction-manifest-v1', 'xinrui-prediction-manifest-v2'].includes(value.schema_version)
         || typeof value.publication_version !== 'string' || !Array.isArray(value.items)
         || value.items.some(item => !item || typeof item.id !== 'string'
           || typeof item.family !== 'string' || typeof item.edition !== 'string'
-          || typeof item.status !== 'string')) throw new Error('Prediction manifest mismatch');
+          || !item.stages && typeof item.status !== 'string')) throw new Error('Prediction manifest mismatch');
       catalogue = value;
       return value;
     }).catch(error => { cataloguePending = null; throw error; });
@@ -183,9 +212,11 @@ export function mountPredictions(container, {
     const url = new URL(item.path, new URL(avatarBase, document.baseURI)).href;
     const key = `${index.publication_version}:${url}`;
     if (!snapshots.has(key)) snapshots.set(key, readJSON(url).then(value => {
-      if (value.schema_version !== 'xinrui-predictions-v1' || value.event !== item.family
+      if (!['xinrui-predictions-v1', 'xinrui-team-swiss-predictions-v1'].includes(value.schema_version) || value.event !== item.family
         || value.edition !== item.edition || value.publication_version !== index.publication_version
-        || !Array.isArray(value.players) || !Array.isArray(value.groups)) throw new Error('Prediction format mismatch');
+        || !Array.isArray(rowsOf(value)) || !Array.isArray(value.groups)
+        || index.snapshot_id && value.snapshot_id !== index.snapshot_id
+        || index.rating_cutoff && value.rating_cutoff !== index.rating_cutoff) throw new Error('Prediction format mismatch');
       return value;
     }).catch(error => { snapshots.delete(key); throw error; }));
     return snapshots.get(key);
@@ -196,6 +227,27 @@ export function mountPredictions(container, {
     data = value;
     page = 0;
     ui.search.value = '';
+    const teams = teamSnapshot(value);
+    ui['search-label'].textContent = teams ? '搜索队伍或队员' : '搜索牌手';
+    ui.search.placeholder = teams ? '输入队名或队员昵称' : '输入牌手昵称';
+    ui.table.setAttribute('aria-label', teams ? '全部队伍晋级及升降保级概率' : '全部牌手升降保级概率');
+    ui.columns.replaceChildren();
+    for (const title of teams ? ['队伍', '分组', '队员', '晋级淘汰赛', '升级', '保级', '降级', '预计名次', '90% 名次区间']
+      : ['牌手', '分组', '等级分 / RD', '进入决赛', '升级', '保级', '降级', '预计名次', '90% 名次区间']) {
+      const th = document.createElement('th'); th.setAttribute('scope', 'col'); th.textContent = title;
+      if (teams && title === '队员') th.className = 'prediction-members-heading';
+      ui.columns.append(th);
+    }
+    ui.sort.replaceChildren();
+    const sorts = teams ? [['mean_rank', '预计名次 ↑'], ['qualification_probability', '晋级淘汰赛概率 ↓'],
+      ['promotion_probability', '升级概率 ↓'], ['retention_probability', '保级概率 ↓'], ['relegation_probability', '降级概率 ↓']]
+      : [['display_rating', '等级分 ↓'], ['qualification_probability', '进入决赛概率 ↓'], ['promotion_probability', '升级概率 ↓'], ['retention_probability', '保级概率 ↓'],
+        ['relegation_probability', '降级概率 ↓'], ['mean_rank', '预计名次 ↑']];
+    for (const [key, title] of sorts) {
+      const option = document.createElement('option'); option.value = key; option.textContent = title;
+      ui.sort.append(option);
+    }
+    ui.sort.value = sorts[0][0];
     groupMap = new Map(value.groups.map(group => [group.id, group]));
     const allGroups = document.createElement('option');
     allGroups.value = '';
@@ -204,7 +256,7 @@ export function mountPredictions(container, {
     for (const group of value.groups) {
       const option = document.createElement('option');
       option.value = group.id;
-      option.textContent = `${group.name}（${format(group.count, 0)} 人）`;
+      option.textContent = `${group.name}（${format(group.count, 0)} ${teams ? '队' : '人'}）`;
       ui.group.append(option);
     }
     ui.group.value = '';
@@ -215,7 +267,7 @@ export function mountPredictions(container, {
     const family = current;
     const turn = ++sequence;
     ui.title.textContent = TITLES[family];
-    ui.description.textContent = '正在读取赛事进度…';
+    ui.description.textContent = '';
     for (const link of container.querySelectorAll('[data-prediction-link]')) {
       const active = link.dataset.predictionLink === family;
       link.classList.toggle('active', active);
@@ -231,33 +283,46 @@ export function mountPredictions(container, {
     try {
       const index = await loadCatalogue();
       if (turn !== sequence) return;
-      const item = latestItem(index.items, family);
+      let item = latestItem(index.items, family);
+      if (index.schema_version === 'xinrui-prediction-manifest-v2') {
+        const month = beijingEdition(now());
+        item = index.items.find(entry => entry.family === family && entry.edition === month) || {
+          family, edition: month, stages: { swiss: {status: 'not_started'}, knockout: {status: 'not_started'} },
+        };
+        ui.edition.textContent = editionLabel(month);
+        const swiss = item.stages.swiss, knockout = item.stages.knockout;
+        const stateText = status => status === 'ended' ? '赛事已结束' : status === 'not_started' ? '赛事未开始' : '';
+        if (ui.knockout) ui.knockout.textContent = stateText(knockout.status);
+        if (knockout.status === 'ongoing') {
+          if (ui.knockout) ui.knockout.textContent = '预测正在加载…';
+          if (!knockout.path) throw new Error('Ongoing knockout forecast missing');
+        }
+        ui.description.textContent = '';
+        if (swiss.status !== 'ongoing') {
+          ui['swiss-blank'].hidden = false;
+          ui['swiss-blank'].textContent = stateText(swiss.status);
+          return;
+        }
+        if (!swiss.path) throw new Error('Ongoing forecast missing');
+        item = {...item, ...swiss, status: 'forecast'};
+      }
       if (!item) {
         ui.description.textContent = '暂无已发布预测。';
         return;
       }
       ui.edition.textContent = editionLabel(item.edition);
+      if (typeof index.rating_cutoff === 'string') onDataLoaded({ event: family, rating_cutoff: index.rating_cutoff });
       if (item.status === 'complete') {
-        ui.description.textContent = '本届赛事已结束。';
-        const completed = item.completed_swiss_rounds ?? item.completed_rounds;
-        const remaining = item.remaining_swiss_rounds ?? item.remaining_rounds ?? 0;
+        ui.description.textContent = '';
         ui['swiss-blank'].hidden = false;
-        ui['swiss-blank'].textContent = Number.isFinite(completed)
-          ? `积分赛已完成 ${format(completed, 0)} 轮，剩余 ${format(remaining, 0)} 轮，无需模拟。`
-          : '本届赛事已结束，无需模拟。';
+        ui['swiss-blank'].textContent = '赛事已结束';
         return;
       }
       if (!item.path) {
         if (item.status === 'unavailable') {
-          ui.description.textContent = '本届历史资料不完整，暂无预测。';
-          const progress = [
-            ['已完成', item.completed_rounds ?? item.completed_swiss_rounds],
-            ['总计', item.total_rounds ?? item.total_swiss_rounds],
-            ['剩余', item.remaining_rounds ?? item.remaining_swiss_rounds],
-          ].filter(([, rounds]) => Number.isFinite(rounds))
-            .map(([label, rounds]) => `${label} ${format(rounds, 0)} 轮`);
+          ui.description.textContent = '';
           ui['swiss-blank'].hidden = false;
-          ui['swiss-blank'].textContent = progress.length ? `${progress.join('，')}。` : '现有历史资料不足以生成预测。';
+          ui['swiss-blank'].textContent = '资料不完整，暂无预测。';
         } else {
           ui.description.textContent = '预测尚未发布。';
         }
@@ -266,21 +331,17 @@ export function mountPredictions(container, {
       const value = await loadSnapshot(item, index);
       if (turn !== sequence) return;
       installSnapshot(value);
-      ui.description.textContent = '根据最新等级分和已完成轮次，估计升、保、降级概率。';
-      ui.edition.textContent = `${editionLabel(data.edition)} · ${format(data.players.length, 0)} 人`;
-      const remaining = data.remaining_rounds;
-      const completed = data.completed_rounds;
-      const cutoff = data.score_cutoff || data.rating_cutoff;
-      const pairing = data.next_round_pairings === 'approximate'
-        ? '后续按累计 VP 邻位近似编排并避免重遇。'
-        : data.first_round_pairings === 'random' ? '首轮随机近似；后续按累计 VP 邻位编排并避免重遇。' : '';
-      const scores = data.current_score_source === 'cloud_scores_with_local_official_completed_round_results'
-        ? '云端已完成轮次比分与本地读取的官方结果已逐轮核对。'
-        : data.current_score_source === 'cloud_scores_with_local_official_first_round_results'
-          ? '云端首轮比分与本地读取的官方首轮结果已交叉核对。' : '';
-      const withdrawals = data.withdrawn_player_count
-        ? `已排除 ${format(data.withdrawn_player_count, 0)} 名退赛牌手。` : '';
-      ui.note.textContent = `截至 ${cutoff}，已完成 ${format(completed, 0)} 轮；每组对剩余 ${format(remaining, 0)} 轮模拟 ${format(data.iterations, 0)} 次。${scores}${withdrawals}${pairing}假设正常参赛。`;
+      const previewLabel = index.preview === 'synthetic_ui_test' ? '合成数据 · ' : '';
+      if (teamSnapshot(data)) {
+        ui.description.textContent = '';
+        ui.edition.textContent = `${previewLabel}${editionLabel(data.edition)} · ${format(data.teams.length, 0)} 队`;
+        onDataLoaded(data);
+        ui.monthly.hidden = false;
+        renderRows();
+        return;
+      }
+      ui.description.textContent = '';
+      ui.edition.textContent = `${previewLabel}${editionLabel(data.edition)} · ${format(data.players.length, 0)} 人`;
       onDataLoaded(data);
       ui.monthly.hidden = false;
       renderRows();
@@ -299,5 +360,11 @@ export function mountPredictions(container, {
     catalogue = null; cataloguePending = null; snapshots.clear();
     return show(current);
   });
-  return { show, setManifest(value) { manifest = value; renderRows(); } };
+  let shownMonth = beijingEdition(now());
+  const monthTimer = setInterval(() => {
+    const month = beijingEdition(now());
+    if (month !== shownMonth) { shownMonth = month; catalogue = null; cataloguePending = null; snapshots.clear(); show(current); }
+  }, 30000);
+  monthTimer.unref?.();
+  return { show, setManifest(value) { manifest = value; renderRows(); }, destroy() { clearInterval(monthTimer); } };
 }
