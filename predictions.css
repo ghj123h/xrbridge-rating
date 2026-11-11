@@ -26,6 +26,12 @@
 .prediction-stay { color: var(--blue); }
 .prediction-down { color: var(--red); }
 .prediction-qualify { color: var(--green); font-weight: 600; }
+.prediction-knockout-table { min-width: 700px; }
+.prediction-knockout-table.is-monthly { min-width: 620px; }
+.prediction-knockout-table.is-monthly th:nth-child(2), .prediction-knockout-table.is-monthly td:nth-child(2) { text-align: right; }
+.prediction-table .prediction-gold { color: #98700b; background: #cba33b0b; font-weight: 600; }
+.prediction-table .prediction-silver { color: #727e90; background: #8894a20a; font-weight: 600; }
+.prediction-table .prediction-bronze { color: #a4643e; background: #b47e500a; font-weight: 600; }
 .prediction-table .prediction-members-heading { text-align: left; }
 .prediction-table .prediction-team-members { text-align: left; white-space: normal; min-width: 230px; max-width: 290px; }
 .prediction-team-members > .table-player + .table-player { margin-top: 8px; }
@@ -54,6 +60,7 @@
   .prediction-controls select { width: 100%; }
   .prediction-result { padding: 11px 18px; font-size: 10px; }
   .prediction-table { min-width: 810px; }
+  .prediction-knockout-table { min-width: 680px; }
   .prediction-table th { padding: 12px 12px; font-size: 10px; }
   .prediction-table td { padding: 13px 12px; font-size: 12px; }
   .prediction-table th:first-child, .prediction-table td:first-child { padding-left: 18px; }

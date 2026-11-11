@@ -127,16 +127,17 @@ def build_stage_results(bundle, registry, *, generated_at, simulator=None):
         for stage,descriptor in item['stages'].items():
             if descriptor['status']!='ongoing':
                 continue
-            module=next((m for m in bundle['modules'] if m['family']==item['family'] and m['edition']==item['edition']),None)
+            module=next((m for m in bundle['modules'] if m['family']==item['family'] and m['edition']==item['edition']
+                         and m.get('stage', 'swiss')==stage),None)
             if module is None:
                 raise PredictionError('prediction_ongoing_input_missing')
             spec=get_prediction_spec(item['family'],registry)
-            if stage!='swiss':
-                raise PredictionError('prediction_knockout_input_required')
+            if stage=='knockout':
+                spec=spec['knockout_prediction']
             options={'generated_at':generated_at}
             if simulator is not None:
                 options['simulator']=simulator
-            if item['family'] in ('team','pair'):
+            if stage=='swiss' and item['family'] in ('team','pair'):
                 spec=spec['swiss_prediction']
             document=load_provider(spec)(module,bundle,spec,**options)
             path=f"predictions/{item['id']}-{stage}.json"
@@ -235,13 +236,14 @@ class PredictionClient:
 def run(version, client, *, registry=None, generated_at=None, simulator=None):
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise PredictionError("invalid_publication_version")
-    existing = client.request(part="manifest", version=version, allow_missing=True)
     selected = get_prediction_registry() if registry is None else registry
-    if reusable_manifest(existing, version, selected):
-        return {"status": "reused", "publication_version": version, "snapshot_id": existing["snapshot_id"],
-            "modules": len(existing.get("items", []))}
     bundle = client.request(part="input", version=version)
     validate_bundle(bundle, version, selected)
+    existing = client.request(part="manifest", version=version, allow_missing=True)
+    if (reusable_manifest(existing, version, selected)
+            and existing.get("snapshot_id") == bundle["snapshot_id"]):
+        return {"status": "reused", "publication_version": version, "snapshot_id": existing["snapshot_id"],
+            "modules": len(existing.get("items", []))}
     results = build_results(bundle, version=version, registry=selected, generated_at=generated_at, simulator=simulator)
     response = client.request(payload={"action": "publish", "version": version, "snapshot_id": bundle["snapshot_id"], "results": results})
     if response.get("publication_version") != version or response.get("snapshot_id") != bundle["snapshot_id"]:

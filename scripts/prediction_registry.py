@@ -13,6 +13,7 @@ _DATE = r"(?:(?P<year>20\d{2})年\s*(?P<month>1[0-2]|0?[1-9])月|(?P<edition>20\
 PREDICTION_REGISTRY = (
     {
         "id": "monthly", "family": "monthly", "provider": "prediction_providers:monthly",
+        "knockout_prediction": {"provider": "prediction_knockout:forecast", "format": "fixed_knockout"},
         "divisions": ["甲级", "乙级", "丙级", "无等级"],
         "parent_matchtype": 60, "child_matchtype": 6,
         "title_pattern": r"^(?=.*月赛).*?" + _DATE, "total_rounds": 9,

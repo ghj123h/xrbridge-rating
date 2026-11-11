@@ -50,14 +50,31 @@ export function mountPredictions(container, {
       <div class="prediction-blank" data-prediction-swiss-blank></div>
     </section>
     <section class="panel prediction-section" aria-labelledby="prediction-knockout-title">
-      <div class="panel-heading"><div class="section-title"><span class="section-kicker">KNOCKOUT STAGE</span><h2 id="prediction-knockout-title">淘汰赛预测</h2></div></div>
+      <div class="panel-heading"><div class="section-title"><span class="section-kicker">KNOCKOUT STAGE</span><h2 id="prediction-knockout-title">淘汰赛预测</h2></div><span class="prediction-edition" data-prediction-ko-edition></span></div>
       <div class="prediction-blank" data-prediction-knockout></div>
+      <div class="prediction-message" data-prediction-ko-error role="alert" hidden>预测暂时未能加载。<button type="button" class="button button-secondary" data-prediction-ko-retry>重新加载</button></div>
+      <div data-prediction-ko-body hidden>
+        <div class="prediction-controls">
+          <label><span>搜索牌手</span><input type="search" data-prediction-ko-search placeholder="输入牌手昵称" autocomplete="off"></label>
+          <label data-prediction-ko-group-control><span>分组</span><select data-prediction-ko-group><option value="">全部分组</option></select></label>
+          <label><span>排序</span><select data-prediction-ko-sort><option value="champion_probability">冠军概率 ↓</option><option value="runner_up_probability">亚军概率 ↓</option><option value="bronze_probability">季军概率 ↓</option><option value="next_round_probability">晋级下一轮概率 ↓</option><option value="display_rating">等级分 ↓</option></select></label>
+          <label><span>每页</span><select data-prediction-ko-size><option>50</option><option>100</option><option>200</option></select></label>
+        </div>
+        <p class="prediction-result" data-prediction-ko-result aria-live="polite"></p>
+        <div class="table-scroll"><table class="prediction-table prediction-knockout-table" data-prediction-ko-table aria-label="存活牌手晋级与奖牌概率">
+          <thead><tr><th scope="col">牌手</th><th scope="col" data-prediction-ko-group-column>分组</th><th scope="col">等级分</th><th scope="col">晋级下一轮</th><th scope="col" class="prediction-gold">冠军</th><th scope="col" class="prediction-silver">亚军</th><th scope="col" class="prediction-bronze">季军</th></tr></thead>
+          <tbody data-prediction-ko-players></tbody>
+        </table></div>
+        <div class="pagination prediction-pagination"><div class="page-controls"><button type="button" class="pagination-button" data-prediction-ko-prev aria-label="淘汰赛名单上一页">←</button><span data-prediction-ko-page></span><button type="button" class="pagination-button" data-prediction-ko-next aria-label="淘汰赛名单下一页">→</button></div></div>
+      </div>
     </section>`;
 
   const find = selector => container.querySelector(`[data-prediction-${selector}]`);
   const ui = Object.fromEntries(['title', 'description', 'edition', 'loading', 'error', 'retry',
     'monthly', 'search', 'group', 'sort', 'size', 'result', 'players', 'prev', 'next',
-    'page', 'swiss-blank', 'columns', 'search-label', 'table', 'knockout'].map(key => [key, find(key)]));
+    'page', 'swiss-blank', 'columns', 'search-label', 'table', 'knockout',
+    ...['edition', 'error', 'retry', 'body', 'search', 'group', 'group-control', 'group-column', 'table', 'sort', 'size', 'result', 'players', 'prev', 'next', 'page'].map(key => `ko-${key}`)]
+    .map(key => [key, find(key)]));
   let data = null;
   let catalogue = null;
   let cataloguePending = null;
@@ -67,6 +84,8 @@ export function mountPredictions(container, {
   let sequence = 0;
   let page = 0;
   let groupMap = new Map();
+  let knockoutData = null;
+  let knockoutPage = 0;
   const teamSnapshot = value => value?.schema_version === 'xinrui-team-swiss-predictions-v1';
   const rowsOf = value => teamSnapshot(value) ? value.teams : value.players;
 
@@ -111,6 +130,64 @@ export function mountPredictions(container, {
     }, {showRating});
     identity.append(avatar, label);
     return identity;
+  }
+  function renderKnockout() {
+    if (!knockoutData) return;
+    const showGroups = knockoutData.event !== 'monthly';
+    const groups = new Map(knockoutData.groups.map(group => [group.id, group]));
+    const needle = ui['ko-search'].value.trim().toLocaleLowerCase();
+    const selected = knockoutData.players.filter(player => (!showGroups || !ui['ko-group'].value || player.group === ui['ko-group'].value)
+      && (!needle || player.nickname.toLocaleLowerCase().includes(needle)));
+    const key = ui['ko-sort'].value;
+    selected.sort((a, b) => Number(b[key] ?? -1) - Number(a[key] ?? -1) || a.id.localeCompare(b.id));
+    const size = Number(ui['ko-size'].value);
+    const pages = Math.max(1, Math.ceil(selected.length / size));
+    knockoutPage = Math.max(0, Math.min(knockoutPage, pages - 1));
+    ui['ko-players'].replaceChildren();
+    for (const player of selected.slice(knockoutPage * size, (knockoutPage + 1) * size)) {
+      const tr = document.createElement('tr');
+      cell(tr, '', 'prediction-player').append(playerIdentity(player));
+      if (showGroups) cell(tr, groups.get(player.group)?.name || '—');
+      cell(tr, formatRating(player.display_rating));
+      cell(tr, percent(player.next_round_probability), 'prediction-qualify');
+      cell(tr, percent(player.champion_probability), 'prediction-gold');
+      cell(tr, percent(player.runner_up_probability), 'prediction-silver');
+      cell(tr, percent(player.bronze_probability), 'prediction-bronze');
+      ui['ko-players'].append(tr);
+    }
+    if (!selected.length) {
+      const tr = document.createElement('tr');
+      cell(tr, showGroups ? '没有符合条件的牌手，试试其他昵称或分组。' : '没有符合条件的牌手，试试其他昵称。', 'prediction-empty').colSpan = showGroups ? 7 : 6;
+      ui['ko-players'].append(tr);
+    }
+    ui['ko-result'].textContent = `匹配 ${format(selected.length, 0)} 人 · 存活 ${format(knockoutData.players.length, 0)} 人`;
+    ui['ko-page'].textContent = `第 ${knockoutPage + 1} / ${pages} 页`;
+    ui['ko-prev'].disabled = knockoutPage === 0;
+    ui['ko-next'].disabled = knockoutPage >= pages - 1;
+  }
+  function installKnockout(value) {
+    const showGroups = value.event !== 'monthly';
+    ui['ko-group-control'].hidden = !showGroups;
+    ui['ko-group-column'].hidden = !showGroups;
+    ui['ko-table'].classList.toggle('is-monthly', !showGroups);
+    if (knockoutData !== value) {
+      knockoutData = value;
+      knockoutPage = 0;
+      ui['ko-search'].value = '';
+      ui['ko-sort'].value = 'champion_probability';
+      const all = document.createElement('option'); all.value = ''; all.textContent = '全部分组';
+      ui['ko-group'].replaceChildren(all);
+      for (const group of value.groups) {
+        const option = document.createElement('option'); option.value = group.id;
+        option.textContent = `${group.name}（${group.count} 人）`; ui['ko-group'].append(option);
+      }
+      ui['ko-group'].value = '';
+    }
+    ui['ko-edition'].textContent = `${editionLabel(value.edition)} · ${format(value.players.length, 0)} 人`;
+    ui.knockout.hidden = true;
+    ui['ko-body'].hidden = false;
+    renderKnockout();
+    onDataLoaded(value);
   }
   function renderRows() {
     if (!data) return;
@@ -212,8 +289,9 @@ export function mountPredictions(container, {
     const url = new URL(item.path, new URL(avatarBase, document.baseURI)).href;
     const key = `${index.publication_version}:${url}`;
     if (!snapshots.has(key)) snapshots.set(key, readJSON(url).then(value => {
-      if (!['xinrui-predictions-v1', 'xinrui-team-swiss-predictions-v1'].includes(value.schema_version) || value.event !== item.family
+      if (!['xinrui-predictions-v1', 'xinrui-team-swiss-predictions-v1', 'xinrui-knockout-predictions-v1'].includes(value.schema_version) || value.event !== item.family
         || value.edition !== item.edition || value.publication_version !== index.publication_version
+        || (item.stage === 'knockout') !== (value.schema_version === 'xinrui-knockout-predictions-v1')
         || !Array.isArray(rowsOf(value)) || !Array.isArray(value.groups)
         || index.snapshot_id && value.snapshot_id !== index.snapshot_id
         || index.rating_cutoff && value.rating_cutoff !== index.rating_cutoff) throw new Error('Prediction format mismatch');
@@ -280,22 +358,37 @@ export function mountPredictions(container, {
     ui.error.hidden = true;
     ui['swiss-blank'].hidden = true;
     ui['swiss-blank'].textContent = '';
+    ui['ko-body'].hidden = true;
+    ui['ko-error'].hidden = true;
+    ui['ko-edition'].textContent = '';
+    ui.knockout.hidden = false;
+    ui.knockout.textContent = '';
     try {
       const index = await loadCatalogue();
       if (turn !== sequence) return;
       let item = latestItem(index.items, family);
       if (index.schema_version === 'xinrui-prediction-manifest-v2') {
-        const month = beijingEdition(now());
+        const month = index.preview === 'historical_knockout' ? index.edition : beijingEdition(now());
         item = index.items.find(entry => entry.family === family && entry.edition === month) || {
           family, edition: month, stages: { swiss: {status: 'not_started'}, knockout: {status: 'not_started'} },
         };
         ui.edition.textContent = editionLabel(month);
         const swiss = item.stages.swiss, knockout = item.stages.knockout;
         const stateText = status => status === 'ended' ? '赛事已结束' : status === 'not_started' ? '赛事未开始' : '';
+        ui['ko-edition'].textContent = editionLabel(month);
         if (ui.knockout) ui.knockout.textContent = stateText(knockout.status);
         if (knockout.status === 'ongoing') {
           if (ui.knockout) ui.knockout.textContent = '预测正在加载…';
-          if (!knockout.path) throw new Error('Ongoing knockout forecast missing');
+          try {
+            if (!knockout.path) throw new Error('Ongoing knockout forecast missing');
+            const value = await loadSnapshot({...item, ...knockout, stage: 'knockout'}, index);
+            if (turn !== sequence) return;
+            installKnockout(value);
+          } catch {
+            if (turn !== sequence) return;
+            ui.knockout.hidden = true;
+            ui['ko-error'].hidden = false;
+          }
         }
         ui.description.textContent = '';
         if (swiss.status !== 'ongoing') {
@@ -360,11 +453,18 @@ export function mountPredictions(container, {
     catalogue = null; cataloguePending = null; snapshots.clear();
     return show(current);
   });
+  ui['ko-retry'].addEventListener('click', () => {
+    catalogue = null; cataloguePending = null; snapshots.clear(); return show(current);
+  });
+  ui['ko-search'].addEventListener('input', () => { knockoutPage = 0; renderKnockout(); });
+  for (const key of ['group', 'sort', 'size']) ui[`ko-${key}`].addEventListener('change', () => { knockoutPage = 0; renderKnockout(); });
+  ui['ko-prev'].addEventListener('click', () => { knockoutPage--; renderKnockout(); });
+  ui['ko-next'].addEventListener('click', () => { knockoutPage++; renderKnockout(); });
   let shownMonth = beijingEdition(now());
   const monthTimer = setInterval(() => {
     const month = beijingEdition(now());
     if (month !== shownMonth) { shownMonth = month; catalogue = null; cataloguePending = null; snapshots.clear(); show(current); }
   }, 30000);
   monthTimer.unref?.();
-  return { show, setManifest(value) { manifest = value; renderRows(); }, destroy() { clearInterval(monthTimer); } };
+  return { show, setManifest(value) { manifest = value; renderRows(); renderKnockout(); }, destroy() { clearInterval(monthTimer); } };
 }

@@ -118,9 +118,21 @@ def forecast(module, bundle, spec, *, generated_at, simulator=simulate_team_grou
             module["family"] + module["edition"] + group["id"]).encode()).digest()[:4], "big")
         if completed == spec["total_rounds"] and "final_ranks" not in group:
             raise ValueError("prediction_team_final_official_ranks_required")
+        history = group.get("prior_opponents")
+        if history is not None:
+            if not isinstance(history, dict):
+                raise ValueError("prediction_team_opponent_history_invalid")
+            normalized_history = {}
+            for key, opponents in history.items():
+                if isinstance(key, str) and key.isascii() and key.isdecimal():
+                    key = int(key)
+                if type(key) is not int or key <= 0 or key in normalized_history:
+                    raise ValueError("prediction_team_opponent_history_invalid")
+                normalized_history[key] = opponents
+            history = normalized_history
         result = simulator(teams, spec["total_rounds"] - completed, rule["boards"], rule["promote"], staying,
             team_size=spec["team_size"], qualify=spec["qualify"], completed_rounds=completed, iterations=10000, seed=seed,
-            prior_opponents=group.get("prior_opponents"), pairings=group.get("next_pairings"), final_ranks=group.get("final_ranks"))
+            prior_opponents=history, pairings=group.get("next_pairings"), final_ranks=group.get("final_ranks"))
         limits = []
         if completed and group.get("opponent_history_complete") is not True:
             limits.append("known_team_opponents_only")
