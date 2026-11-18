@@ -63,11 +63,12 @@ function renderStats() {
   const stats = state.manifest.stats;
   const cards = [
     ['已计分牌手', number(stats.players), `${number(stats.mature_players)} 人已成熟`],
-    ['近 30 日活跃', number(stats.active_30d), '至少一场有效计分对局'],
-    ['近 30 日对局', number(stats.valid_matches_30d), `${number(stats.boards_30d)} 副 · 每局只计一次`],
-    ['成熟牌手中位等级分', stats.median_mature_rating == null ? '—' : formatRating(stats.median_mature_rating, 0), '当前已成熟牌手'],
+    ['近 30 日活跃牌手', number(stats.active_30d), ''],
+    ['近 30 日有效对局', number(stats.valid_matches_30d), `共 ${number(stats.boards_30d)} 副`],
+    ['成熟牌手中位等级分', stats.median_mature_rating == null ? '—' : formatRating(stats.median_mature_rating, 0), ''],
   ];
-  $('site-stats').innerHTML = cards.map(([label, value, detail]) => `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div><div class="stat-detail">${detail}</div></div>`).join('');
+  $('site-stats').innerHTML = cards.map(([label, value, detail]) => `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div>${detail ? `<div class="stat-detail">${detail}</div>` : ''}</div>`).join('');
+  $('site-overview').open = window.matchMedia('(min-width: 860px)').matches;
   $('header-update').textContent = `数据截至 ${shiftDay(state.manifest.cutoff.slice(0, 10), -1)}`;
   $('footer-meta').textContent = `北京时间 · 最后成功发布 ${dateTime(state.manifest.generated_at)} · ${state.manifest.algorithm}`;
 }
@@ -81,11 +82,10 @@ function renderRanking(reset = false) {
   const rows = filterPlayers(state.index.players, state.index.aliases || {}, f, state.manifest.recent_start);
   const page = rankingPage(rows, state.board, state.page, state.pageSize);
   state.page = page.page;
-  document.querySelectorAll('[data-board]').forEach(button => { const active = button.dataset.board === state.board; button.classList.toggle('active', active); button.setAttribute('aria-selected', active); });
+  document.querySelectorAll('[data-board]').forEach(button => { const active = button.dataset.board === state.board; button.classList.toggle('active', active); button.setAttribute('aria-pressed', active); });
   $('change-column').textContent = f.period === '1' ? '昨日变化' : `近 ${f.period} 日变化`;
-  const periodLabel = f.period === '1' ? '昨日' : `近 ${f.period} 日`;
-  $('ranking-note').textContent = state.board === 'rating' ? '按等级分排序；仅成熟牌手有排名，暂定牌手以黑色用户名列出、不赋予名次。' : `按${periodLabel}等级分净变化排序，仅限成熟牌手，整日排除日初仍有隐藏分的计分日，展示前 30 名。`;
-  $('search-status').textContent = f.query.trim() ? `找到 ${number(rows.length)} 名牌手，支持当前昵称和历史昵称` : '搜索自己、对手，或一位熟悉的牌友';
+  $('ranking-note').textContent = state.board === 'rating' ? '仅成熟牌手有排名' : '成熟牌手前 30 名 · 仅计日初已完成前六场的计分日';
+  $('search-status').textContent = f.query.trim() ? `匹配 ${number(rows.length)} 名牌手` : '';
   const deltaKey = boardChangeKey(state.board, f.period);
   $('ranking-body').innerHTML = page.items.map((player, i) => `<tr>
     <td><span class="rank ${state.board === 'rating' && player.rank != null && player.rank <= 3 ? 'rank-top' : ''}">${player.provisional ? '—' : state.board === 'rating' ? player.rank : state.page * state.pageSize + i + 1}</span></td>
@@ -102,20 +102,25 @@ function renderRanking(reset = false) {
   $('page-number').value = state.page + 1;
 }
 function overviewCard(label, value, note, extra = '') {
-  return `<div class="overview-card"><div class="card-label">${label}</div><div class="card-value ${extra}">${value}</div><div class="card-note">${note}</div></div>`;
+  return `<div class="overview-card"><div class="card-label">${label}</div><div class="card-value ${extra}">${value}</div>${note ? `<div class="card-note">${note}</div>` : ''}</div>`;
 }
 function renderOverview(player, history = null) {
-  $('player-heading').innerHTML = `${playerAvatar(player, 'avatar')}<div class="profile-title"><div class="profile-name-row">${personName(player, {link: false, tag: 'h1', className: ''})}</div><p>最近参赛 ${escape(player.last_rated_day || '—')}</p></div>`;
+  const lastPlayed = player.last_rated_day ? ` · 最近参赛 ${escape(player.last_rated_day)}` : '';
+  $('player-heading').innerHTML = `${playerAvatar(player, 'avatar')}
+    <div class="profile-title">
+      <div class="profile-name-row">${personName(player, {link: false, tag: 'h1', className: ''})}</div>
+      <p>${player.provisional ? '暂定牌手' : '成熟牌手'}${lastPlayed}</p>
+    </div>`;
   const { rank, percentile } = rankingInfo(player, state.manifest.stats.mature_players);
-  const matureNote = player.provisional ? `累计 ${number(player.rated_board_count)} 副 · RD ${number(player.rating_deviation, 1)}；成熟需 ≥400 副且 RD≤225` : `累计 ${number(player.rated_board_count)} 副有效牌`;
-  const peak = history?.points.reduce((best, point) => !best || point[1] > best[1] ? point : best, history.points[0]);
+  const peak = history?.points.reduce((best, point) => !best || point[1] > best[1] ? point : best, null);
+  const ratingNote = player.provisional && player.rating_deviation != null ? `不确定度 RD ${number(player.rating_deviation, 1)}` : '';
   $('player-overview').innerHTML = [
-    overviewCard('等级分', formatRating(player.display_rating), `最近更新 ${escape(player.last_rated_day || '—')}`),
-    overviewCard('全站排名', rank == null ? '#-' : `#${number(rank)}`, percentile == null ? '暂定牌手暂不参与排名' : `超过 ${number(percentile, 2)}% 的成熟牌手`),
+    overviewCard('当前等级分', formatRating(player.display_rating), ratingNote),
+    overviewCard('全站排名', rank == null ? '#-' : `#${number(rank)}`, percentile == null ? '仅成熟牌手参与排名' : `超过 ${number(percentile, 2)}% 的成熟牌手`),
     overviewCard('近 30 日变化', signed(player.delta_30d), `近 7 日 ${signed(player.delta_7d)}`, changeClass(player.delta_30d)),
-    overviewCard('历史最高等级分', formatRating(player.peak_display_rating), escape(peak?.[0] || '—')),
-    overviewCard('有效计分对局', number(player.rated_match_count), matureNote),
-    overviewCard('30 日场均 VP', player.avg_vp_30d == null ? '—' : number(player.avg_vp_30d, 2), `近 30 日 ${number(player.recent_match_count)} 场 · 归一化 20 VP`),
+    overviewCard('历史最高分', formatRating(player.peak_display_rating), escape(peak?.[0] || '')),
+    overviewCard('有效对局', `${number(player.rated_match_count)} <small>场</small>`, `累计 ${number(player.rated_board_count)} 副`),
+    overviewCard('近 30 日场均 VP', player.avg_vp_30d == null ? '—' : number(player.avg_vp_30d, 2), `${number(player.recent_match_count)} 场 · 20 VP 制`),
   ].join('');
 }
 let currentHistory, currentRecent = [], chartZoom = null;
@@ -129,7 +134,9 @@ function renderCurve() {
     onZoom: next => { chartZoom = next; renderCurve(); },
   });
   $('reset-zoom').hidden = !chartZoom;
-  $('chart-caption').textContent = `${chartZoom ? `${dateString(chartZoom.min)} — ${dateString(chartZoom.max)} · ` : ''}按日结等级分连接。拖动框选横轴可放大；悬浮查看最近记录。`;
+  const start = chartZoom ? dateString(chartZoom.min)
+    : $('curve-period').value === 'all' ? currentHistory.points[0]?.[0] : shiftDay(endDay, 1 - Number($('curve-period').value));
+  $('chart-caption').textContent = start ? `${start} 至 ${chartZoom ? dateString(chartZoom.max) : endDay}` : '';
 }
 function renderMatches(reset = false) {
   if (reset) state.recentLimit = 60;
@@ -138,27 +145,80 @@ function renderMatches(reset = false) {
     const opponent = state.byId.get(match.opponent_id);
     return !needle || [state.index.competitions[match.competition_id]?.title || '', opponent?.nickname || '', ...(state.index.aliases?.[match.opponent_id] || [])].some(value => value.toLocaleLowerCase().includes(needle));
   });
-  $('recent-summary').textContent = `${state.manifest.recent_start} — ${shiftDay(state.manifest.recent_end_exclusive, -1)} · 共 ${number(currentRecent.length)} 场有效计分对局${needle ? ` · 筛选后 ${number(filtered.length)} 场` : ''} · 对手等级分与颜色取计分前状态`;
-  if (!filtered.length) { $('match-list').innerHTML = '<div class="empty-state">没有符合条件的计分对局。</div>'; $('more-matches').hidden = true; return; }
+  const dates = `${state.manifest.recent_start} 至 ${shiftDay(state.manifest.recent_end_exclusive, -1)}`;
+  const count = needle ? `匹配 ${number(filtered.length)} / ${number(currentRecent.length)} 场` : `共 ${number(currentRecent.length)} 场`;
+  $('recent-summary').textContent = `${dates} · ${count}`;
+  if (!filtered.length) {
+    $('match-list').innerHTML = `<div class="empty-state">${currentRecent.length ? '没有匹配的赛事或对手' : '近 30 日暂无计分对局'}</div>`;
+    $('more-matches').hidden = true;
+    return;
+  }
   const days = new Map();
   filtered.slice(0, state.recentLimit).forEach(match => { if (!days.has(match.day)) days.set(match.day, []); days.get(match.day).push(match); });
   const scoreByDay = historyMetrics(currentHistory);
-  $('match-list').innerHTML = [...days].map(([day, matches]) => `<section class="day-group"><div class="day-header"><h3>${day}</h3><span class="day-count">${number(currentRecent.filter(item => item.day === day).length)} 场</span><span class="day-change ${changeClass(scoreByDay.get(day)?.delta || 0)}">当日等级分 ${signed(scoreByDay.get(day)?.delta || 0)}</span></div>${matches.map(match => {
+  $('match-list').innerHTML = [...days].map(([day, matches]) => `<section class="day-group"><div class="day-header"><h3>${day}</h3><span class="day-count">当日 ${number(currentRecent.filter(item => item.day === day).length)} 场</span><span class="day-change ${changeClass(scoreByDay.get(day)?.delta)}">当日变化 ${scoreByDay.has(day) ? signed(scoreByDay.get(day).delta) : '—'}</span></div>${matches.map(match => {
     const opponent = state.byId.get(match.opponent_id);
     const beforeOpponent = opponent && { ...opponent, avatar: match.opponent_avatar ?? opponent.avatar, display_rating: match.opponent_display_rating_before,
       provisional: match.opponent_provisional_before, rating_tier: match.opponent_rating_tier_before };
     const event = state.index.competitions[match.competition_id]?.title || match.competition_id;
     const score = matchScoreDisplay(match);
-    return `<div class="match-row"><div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div><div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name">${personName(beforeOpponent, {showRating: true, ratingClass: 'opponent-rating'})}</span>` : personName({provisional: true}, {link: false})}</div><div class="score">${score.score} <span>:</span> ${score.opponentScore}<small>${score.label}</small></div><div class="board-count">${match.boards} 副</div></div>`;
+    return `<div class="match-row">
+      <div class="event-info"><div class="event-title">${escape(event)}</div><div class="match-meta">第 ${match.round} 轮 · 第 ${match.table} 桌${match.pairing != null ? ` · 第 ${match.pairing} 台` : ''}</div></div>
+      <div class="opponent"><span class="match-meta">对手</span>${beforeOpponent ? `${playerAvatar(beforeOpponent, 'avatar-opponent')}<span class="opponent-name" title="该场计分前的等级分">${personName(beforeOpponent, {showRating: true, ratingClass: 'opponent-rating'})}</span>` : personName({provisional: true}, {link: false})}</div>
+      <div class="score">${score.score} <span>:</span> ${score.opponentScore}<small>${score.label}</small></div>
+      <div class="board-count">${match.boards} 副</div>
+    </div>`;
   }).join('')}</section>`).join('');
   $('more-matches').hidden = filtered.length <= state.recentLimit;
-  $('more-matches').textContent = `再显示 ${Math.min(60, filtered.length - state.recentLimit)} 场`;
+  if (!$('more-matches').hidden) $('more-matches').textContent = `再显示 ${Math.min(60, filtered.length - state.recentLimit)} 场`;
 }
 function renderRules() {
-  $('rules-content').innerHTML = `<div class="rule-card"><h2>哪些比赛计入等级分</h2><p>仅计入已确认由新睿主办的官方赛事，以及在发布截止时间之前结束、已完整校验的轮次。赛事整体仍在进行时，已结束的完整轮次也可以计入。</p><p>轮空、无效账号、弃权和异常无效比分不进入计分。近 30 日记录展示所有已纳入本次计分的有效对局。</p></div>
-  <div class="rule-grid"><div class="rule-card"><h2>等级分与涨跌</h2><p>新牌手的等级分从 0 起步，前六场有效对局逐步释放初始分数。个人概览、历史曲线和每日变化保留这一过程；上分榜和下分榜整日排除日初仍有隐藏分的计分日，即使当天完成了第六场，也从下一计分日开始累计。</p><p>成熟牌手的用户名颜色表示分档；暂定牌手使用黑色。</p></div><div class="rule-card"><h2>每日结算</h2><p>同一天的对局在日末统一汇总。比赛详情按日列出等级分总变化；个人淘汰赛比分展示原始 IMP，其余对局展示归一化 20 VP。评级和场均 VP 均使用归一化 VP。对手的等级分、暂定状态和颜色均取该场计分前的冻结状态，同一天采用相同的日初状态。</p><p>昨日、近 7 日、近 30 日均按北京时间自然日计算，以当前发布截止时间为准。表现分来自当日结算，按对手分数与对局权重计算。计算表现分时，逐场将 20.00 VP 按 19.99 VP、0.00 VP 按 0.01 VP 处理；实际等级分变化仍使用原成绩。</p></div></div>
-  <div class="rule-card"><h2>暂定与成熟</h2><p>所有牌手最初为暂定状态。累计至少 400 副有效牌，且最后有效计分时 RD≤225，表示达到当前可信度门槛，成为成熟牌手。六场初始分数释放完成与计分成熟是两个独立条件。</p><p>成熟状态只在有有效对局的计分日重算。长期未参赛会使 RD 回升，恢复参赛后若日末 RD 仍高于 225，可重新变为暂定；没有新有效对局时保留最后计分状态。</p><p>曲线背景按分数区间划分，纵轴随当前查看范围调整。可拖动框选横轴放大，再点击“恢复范围”返回。</p></div>
-  <div class="rule-grid"><div class="rule-card"><h2>排名与筛选</h2><p>仅成熟牌手参与排名，按等级分降序排列，分数相同时沿用固定次序。暂定牌手可出现在排行榜中，名次显示为“—”；个人页显示“#-”，不计算分位数。成熟牌手的全站排名与分位数均以全站成熟牌手为统计范围。</p><p>排行榜筛选后保留全站成熟牌手排名，支持翻页和跳页；上分榜和下分榜仅显示符合所选条件的成熟牌手前 30 名。</p><p>活跃牌手指近 30 日至少有一场有效计分对局的人。场均 VP 为近 30 日有效对局归一化 VP 的算术平均。</p></div><div class="rule-card"><h2>数据覆盖与更新</h2><p>当前历史覆盖 ${state.manifest.history_start} 至 ${state.manifest.history_end}。数据排他截止点：${dateTime(state.manifest.cutoff)}（北京时间）。最后成功发布：${dateTime(state.manifest.generated_at)}。</p><p>历史曲线与最高分使用当前算法重算的结果。比分修订或算法调整可能改变历史；采集或计分未通过校验时，网页保留上一份成功发布的数据。</p><p>算法 ${escape(state.manifest.algorithm)}</p></div></div>`;
+  const publication = state.manifest;
+  $('rules-content').innerHTML = `
+    <div class="rule-grid">
+      <section class="rule-card">
+        <h2>哪些对局计分</h2>
+        <p>只计入已确认由新睿主办的官方赛事。轮次须在数据截止前结束，并通过完整校验。赛事仍在进行时，已完成的轮次可以计分。</p>
+        <p>计分时排除轮空、无效账号、弃权和异常无效比分。个人页收录近 30 日内的全部有效计分对局。</p>
+      </section>
+      <section class="rule-card">
+        <h2>初始分与成熟条件</h2>
+        <p>新牌手的显示分从 0 起步，前六场有效对局逐步释放初始分。个人概览、曲线和每日涨跌都包含这部分变化。</p>
+        <p>所有牌手以暂定状态起步。累计至少 <strong>400 副</strong>有效牌，且最近计分日结束时<strong>不确定度 RD ≤ 225</strong>，才达到成熟门槛。</p>
+        <p>长期未参赛会使 RD 回升。再次计分后若 RD 仍高于 225，状态会转回暂定。两次计分之间沿用上次状态。</p>
+      </section>
+    </div>
+    <div class="rule-grid">
+      <section class="rule-card">
+        <h2>榜单与排名</h2>
+        <p><strong>排行榜</strong>按等级分从高到低排列，同分时沿用固定次序。名次和分位均以全站成熟牌手为准，筛选和翻页后保留原名次。暂定牌手用黑色姓名，榜上名次显示为“—”，个人页显示“#-”。成熟牌手的姓名颜色表示等级分档。</p>
+        <p><strong>上分榜与下分榜</strong>各显示所选条件下净涨跌最多的 30 名成熟牌手。只累计日初已完成前六场有效对局的计分日，第六场当天的涨跌整日排除。</p>
+        <p><strong>近 30 日活跃</strong>指这段时间内至少有一场有效计分对局。昨日、近 7 日、近 30 日均按发布截止点和北京时间自然日计算。</p>
+      </section>
+      <section class="rule-card">
+        <h2>每日结算与比分</h2>
+        <p>同一天的对局在日末统一结算，个人页按日显示总变化。对手的等级分、成熟状态和姓名颜色取比赛日的日初记录。</p>
+        <p>个人淘汰赛展示原始 IMP，其他对局展示归一化 20 VP。评级统一使用归一化 VP，近 30 日场均 VP 为期间有效对局的算术平均值。</p>
+        <p>当日表现分按对手等级分和对局权重计算。计算表现分时，每场的 20.00 VP 取 19.99，0.00 VP 取 0.01。实际等级分变化按原成绩计算。</p>
+      </section>
+    </div>
+    <div class="rule-grid">
+      <section class="rule-card">
+        <h2>等级分曲线</h2>
+        <p>曲线连接每日结算的等级分，背景色表示分档，纵轴随当前日期范围调整。选中记录可查当天的分数、涨跌与表现分。</p>
+        <p>拖选一段日期可放大，选择“恢复范围”可回到原视图。历史曲线及最高分按当前算法重算，比分修订或算法更新都可能改变历史数值。</p>
+      </section>
+      <section class="rule-card">
+        <h2>数据覆盖与发布</h2>
+        <dl class="rule-facts">
+          <dt>计分日期</dt><dd>${escape(publication.history_start)} 至 ${escape(publication.history_end)}</dd>
+          <dt>数据截止</dt><dd>${dateTime(publication.cutoff)}（北京时间，不含该时刻）</dd>
+          <dt>最近发布</dt><dd>${dateTime(publication.generated_at)}（北京时间）</dd>
+          <dt>算法版本</dt><dd>${escape(publication.algorithm)}</dd>
+        </dl>
+        <p>采集或计分未通过校验时，网站沿用上一次成功发布的数据。</p>
+      </section>
+    </div>`;
 }
 async function route() {
   const sequence = ++state.routeSequence;

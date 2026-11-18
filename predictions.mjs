@@ -20,17 +20,16 @@ export function mountPredictions(container, {
 } = {}) {
   container.innerHTML = `
     <header class="prediction-intro">
-      <p class="eyebrow"><span></span> THREE MAJOR EVENTS</p>
       <h1 data-prediction-title>月赛预测</h1>
-      <p data-prediction-description></p>
+      <nav class="prediction-nav" aria-label="选择预测赛事">
+        <a href="#predictions/monthly" data-prediction-link="monthly">月赛</a>
+        <a href="#predictions/team" data-prediction-link="team">团体赛</a>
+        <a href="#predictions/pair" data-prediction-link="pair">双人团体赛</a>
+      </nav>
     </header>
-    <nav class="prediction-nav" aria-label="三大赛预测">
-      <a href="#predictions/monthly" data-prediction-link="monthly">月赛预测</a>
-      <a href="#predictions/team" data-prediction-link="team">团体赛预测</a>
-      <a href="#predictions/pair" data-prediction-link="pair">双人团预测</a>
-    </nav>
+    <p class="prediction-status" data-prediction-description role="status"></p>
     <section class="panel prediction-section" aria-labelledby="prediction-swiss-title">
-      <div class="panel-heading"><div class="section-title"><span class="section-kicker">SWISS STAGE</span><h2 id="prediction-swiss-title">积分赛预测</h2></div><span class="prediction-edition" data-prediction-edition></span></div>
+      <div class="panel-heading"><h2 id="prediction-swiss-title">积分赛预测</h2><span class="prediction-edition" data-prediction-edition></span></div>
       <div class="prediction-message" data-prediction-loading role="status" hidden>正在读取预测…</div>
       <div class="prediction-message" data-prediction-error role="alert" hidden><p>预测暂时未能加载，请重试。</p><button type="button" class="button button-secondary" data-prediction-retry>重新加载</button></div>
       <div data-prediction-monthly hidden>
@@ -40,17 +39,16 @@ export function mountPredictions(container, {
           <label><span>排序</span><select data-prediction-sort><option value="display_rating">等级分 ↓</option><option value="promotion_probability">升级概率 ↓</option><option value="retention_probability">保级概率 ↓</option><option value="relegation_probability">降级概率 ↓</option><option value="mean_rank">预计名次 ↑</option></select></label>
           <label><span>每页</span><select data-prediction-size><option>50</option><option>100</option><option>200</option></select></label>
         </div>
-        <p class="prediction-result" data-prediction-result aria-live="polite"></p>
-        <div class="table-scroll"><table class="prediction-table" data-prediction-table aria-label="全部牌手升降保级概率">
+        <div class="table-scroll" tabindex="0" role="region" aria-labelledby="prediction-swiss-title"><table class="prediction-table" data-prediction-table aria-label="全部牌手升降保级概率">
           <thead><tr data-prediction-columns><th scope="col">牌手</th><th scope="col">分组</th><th scope="col">等级分 / RD</th><th scope="col">升级</th><th scope="col">保级</th><th scope="col">降级</th><th scope="col">预计名次</th><th scope="col">90% 名次区间</th></tr></thead>
           <tbody data-prediction-players></tbody>
         </table></div>
-        <div class="pagination prediction-pagination"><div class="page-controls"><button type="button" class="pagination-button" data-prediction-prev aria-label="预测名单上一页">←</button><span data-prediction-page></span><button type="button" class="pagination-button" data-prediction-next aria-label="预测名单下一页">→</button></div></div>
+        <div class="pagination prediction-pagination"><p class="prediction-result" data-prediction-result aria-live="polite"></p><div class="page-controls"><button type="button" class="pagination-button" data-prediction-prev aria-label="预测名单上一页">←</button><span data-prediction-page></span><button type="button" class="pagination-button" data-prediction-next aria-label="预测名单下一页">→</button></div></div>
       </div>
       <div class="prediction-blank" data-prediction-swiss-blank></div>
     </section>
     <section class="panel prediction-section" aria-labelledby="prediction-knockout-title">
-      <div class="panel-heading"><div class="section-title"><span class="section-kicker">KNOCKOUT STAGE</span><h2 id="prediction-knockout-title">淘汰赛预测</h2></div><span class="prediction-edition" data-prediction-ko-edition></span></div>
+      <div class="panel-heading"><h2 id="prediction-knockout-title">淘汰赛预测</h2><span class="prediction-edition" data-prediction-ko-edition></span></div>
       <div class="prediction-blank" data-prediction-knockout></div>
       <div class="prediction-message" data-prediction-ko-error role="alert" hidden>预测暂时未能加载。<button type="button" class="button button-secondary" data-prediction-ko-retry>重新加载</button></div>
       <div data-prediction-ko-body hidden>
@@ -60,12 +58,11 @@ export function mountPredictions(container, {
           <label><span>排序</span><select data-prediction-ko-sort><option value="champion_probability">冠军概率 ↓</option><option value="runner_up_probability">亚军概率 ↓</option><option value="bronze_probability">季军概率 ↓</option><option value="next_round_probability">晋级下一轮概率 ↓</option><option value="display_rating">等级分 ↓</option></select></label>
           <label><span>每页</span><select data-prediction-ko-size><option>50</option><option>100</option><option>200</option></select></label>
         </div>
-        <p class="prediction-result" data-prediction-ko-result aria-live="polite"></p>
-        <div class="table-scroll"><table class="prediction-table prediction-knockout-table" data-prediction-ko-table aria-label="存活牌手晋级与奖牌概率">
+        <div class="table-scroll" tabindex="0" role="region" aria-labelledby="prediction-knockout-title"><table class="prediction-table prediction-knockout-table" data-prediction-ko-table aria-label="存活牌手晋级与奖牌概率">
           <thead><tr><th scope="col">牌手</th><th scope="col" data-prediction-ko-group-column>分组</th><th scope="col">等级分</th><th scope="col">晋级下一轮</th><th scope="col" class="prediction-gold">冠军</th><th scope="col" class="prediction-silver">亚军</th><th scope="col" class="prediction-bronze">季军</th></tr></thead>
           <tbody data-prediction-ko-players></tbody>
         </table></div>
-        <div class="pagination prediction-pagination"><div class="page-controls"><button type="button" class="pagination-button" data-prediction-ko-prev aria-label="淘汰赛名单上一页">←</button><span data-prediction-ko-page></span><button type="button" class="pagination-button" data-prediction-ko-next aria-label="淘汰赛名单下一页">→</button></div></div>
+        <div class="pagination prediction-pagination"><p class="prediction-result" data-prediction-ko-result aria-live="polite"></p><div class="page-controls"><button type="button" class="pagination-button" data-prediction-ko-prev aria-label="淘汰赛名单上一页">←</button><span data-prediction-ko-page></span><button type="button" class="pagination-button" data-prediction-ko-next aria-label="淘汰赛名单下一页">→</button></div></div>
       </div>
     </section>`;
 
@@ -160,7 +157,9 @@ export function mountPredictions(container, {
       cell(tr, showGroups ? '没有符合条件的牌手，试试其他昵称或分组。' : '没有符合条件的牌手，试试其他昵称。', 'prediction-empty').colSpan = showGroups ? 7 : 6;
       ui['ko-players'].append(tr);
     }
-    ui['ko-result'].textContent = `匹配 ${format(selected.length, 0)} 人 · 存活 ${format(knockoutData.players.length, 0)} 人`;
+    ui['ko-result'].textContent = needle || (showGroups && ui['ko-group'].value)
+      ? `匹配 ${format(selected.length, 0)} 人 · 存活 ${format(knockoutData.players.length, 0)} 人`
+      : `仍在赛 ${format(knockoutData.players.length, 0)} 人`;
     ui['ko-page'].textContent = `第 ${knockoutPage + 1} / ${pages} 页`;
     ui['ko-prev'].disabled = knockoutPage === 0;
     ui['ko-next'].disabled = knockoutPage >= pages - 1;
@@ -245,7 +244,9 @@ export function mountPredictions(container, {
       ui.players.append(tr);
     }
     const unit = teams ? '队' : '人';
-    ui.result.textContent = `匹配 ${format(selected.length, 0)} ${unit} · 共 ${format(rows.length, 0)} ${unit}`;
+    ui.result.textContent = needle || ui.group.value
+      ? `匹配 ${format(selected.length, 0)} ${unit} · 共 ${format(rows.length, 0)} ${unit}`
+      : `共 ${format(rows.length, 0)} ${unit}`;
     ui.page.textContent = `第 ${page + 1} / ${pages} 页`;
     ui.prev.disabled = page === 0;
     ui.next.disabled = page >= pages - 1;

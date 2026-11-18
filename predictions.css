@@ -1,71 +1,198 @@
-.prediction-intro { padding: 40px 0 23px; }
-.prediction-intro h1 { margin: 10px 0 9px; font-size: 34px; font-weight: 680; letter-spacing: -.6px; line-height: 1.4; }
-.prediction-intro > p:last-child { font-size: 13px; color: var(--muted); }
-.prediction-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 26px; }
-.prediction-nav a { padding: 8px 19px; color: #7a8680; border: 1px solid transparent; border-radius: 6px; font-size: 12px; font-weight: 600; }
-.prediction-nav a:hover { color: var(--green); background: #eef3ed; }
-.prediction-nav a.active { background: #fff; color: var(--green); border-color: #dfe7dd; box-shadow: 0 1px 3px #143c2908; }
-.prediction-section { margin-bottom: 24px; }
-.prediction-edition { color: #87938a; font-size: 11px; white-space: nowrap; }
-.prediction-controls { display: flex; align-items: flex-end; gap: 18px; padding: 17px 27px; background: #fafbf8; border-top: 1px solid #f0f2ee; flex-wrap: wrap; }
-.prediction-controls label { display: flex; align-items: center; gap: 9px; }
-.prediction-controls label > span { font-size: 11px; color: #87918a; white-space: nowrap; }
-.prediction-controls input { background: #fff; color: var(--ink); padding: 7px 10px; border: 1px solid #e1e6df; border-radius: 5px; font-size: 12px; min-height: 32px; width: 198px; }
-.prediction-controls input:focus-visible { border-color: #559e88; box-shadow: 0 0 0 3px #16776412; }
-.prediction-result { padding: 12px 27px; font-size: 11px; color: #87938a; border-bottom: 1px solid var(--line); }
-.prediction-table { width: 100%; min-width: 845px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.prediction-table th { color: #89958e; background: #f8faf7; font-size: 11px; font-weight: 500; padding: 13px 14px; text-align: right; white-space: nowrap; }
-.prediction-table td { font-size: 12px; padding: 15px 14px; border-bottom: 1px solid #eff2ec; text-align: right; white-space: nowrap; }
-.prediction-table th:first-child, .prediction-table td:first-child { width: 22%; padding-left: 27px; text-align: left; }
-.prediction-table th:nth-child(2), .prediction-table td:nth-child(2) { text-align: left; }
-.prediction-table th:last-child, .prediction-table td:last-child { padding-right: 27px; }
-.prediction-table tbody tr:hover { background: #fbfcf8; }
-.prediction-table .prediction-player { min-width: 170px; max-width: 250px; white-space: normal; overflow-wrap: anywhere; }
-.prediction-player-label { min-width: 0; }
-.prediction-up { color: var(--green); }
-.prediction-stay { color: var(--blue); }
-.prediction-down { color: var(--red); }
-.prediction-qualify { color: var(--green); font-weight: 600; }
-.prediction-knockout-table { min-width: 700px; }
-.prediction-knockout-table.is-monthly { min-width: 620px; }
-.prediction-knockout-table.is-monthly th:nth-child(2), .prediction-knockout-table.is-monthly td:nth-child(2) { text-align: right; }
-.prediction-table .prediction-gold { color: #98700b; background: #cba33b0b; font-weight: 600; }
-.prediction-table .prediction-silver { color: #727e90; background: #8894a20a; font-weight: 600; }
-.prediction-table .prediction-bronze { color: #a4643e; background: #b47e500a; font-weight: 600; }
-.prediction-table .prediction-members-heading { text-align: left; }
-.prediction-table .prediction-team-members { text-align: left; white-space: normal; min-width: 230px; max-width: 290px; }
-.prediction-team-members > .table-player + .table-player { margin-top: 8px; }
-.prediction-team-members .prediction-player-label { overflow-wrap: anywhere; }
-.prediction-team-name { font-weight: 600; }
-.prediction-pagination { justify-content: flex-end; }
-.prediction-pagination [data-prediction-page] { color: #849087; font-size: 11px; white-space: nowrap; }
-.prediction-table .prediction-empty { text-align: center; color: var(--muted); padding: 30px 20px; white-space: normal; }
-.prediction-blank { min-height: 86px; padding: 0 27px 18px; color: #87938a; font-size: 11px; font-weight: 400; line-height: 1.8; }
-.prediction-message { padding: 10px 27px 28px; color: var(--muted); font-size: 12px; }
-.prediction-message button { margin-top: 12px; }
+.prediction-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px 30px;
+  padding: 34px 0 24px;
+}
+.prediction-intro h1 { margin: 0; }
+.prediction-nav {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  background: #eeeee7;
+  border-radius: 9px;
+}
+.prediction-nav a {
+  display: grid;
+  min-height: 40px;
+  padding: 8px 17px;
+  place-items: center;
+  border-radius: 6px;
+  color: #48554c;
+  font-weight: 600;
+  font-size: 14px;
+}
+.prediction-nav a:hover { background: #e1e5dc; color: #195644; }
+.prediction-nav a.active { background: #195644; color: #fff; }
+.prediction-status:not(:empty) {
+  margin-bottom: 18px;
+  color: var(--muted);
+}
+.prediction-section {
+  --prediction-inset: clamp(16px, 2.4vw, 28px);
+  min-width: 0;
+  margin-bottom: 20px;
+}
+.prediction-section .panel-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding: 21px var(--prediction-inset) 17px;
+}
+.prediction-section h2 { margin: 0; font-size: 21px; line-height: 1.4; }
+.prediction-edition, .prediction-result {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 16px var(--prediction-inset) 18px;
+  border-top: 1px solid var(--line);
+}
+.prediction-controls label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.prediction-controls label:first-child { flex: 1 1 220px; }
+.prediction-controls label > span {
+  color: #526058;
+  font-size: 12px;
+  font-weight: 600;
+}
+.prediction-controls input, .prediction-controls select {
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.prediction-controls input {
+  border: 1px solid #bbc6bc;
+  padding: 8px 12px;
+  background: #fff;
+  color: var(--ink);
+}
+.prediction-controls input:focus-visible, .prediction-section .table-scroll:focus-visible {
+  outline: 2px solid #195644;
+  outline-offset: -2px;
+}
+.prediction-table {
+  width: 100%;
+  min-width: 800px;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-section .table-scroll { overflow-x: auto; }
+.prediction-table th, .prediction-table td {
+  text-align: right;
+  padding: 12px 13px;
+  white-space: nowrap;
+}
+.prediction-table th {
+  background: #f0f2ec;
+  color: #49564e;
+  border-block: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 650;
+}
+.prediction-table td {
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 14px;
+}
+.prediction-table tr:last-child td { border-bottom: 0; }
+.prediction-table tbody tr:hover td { background-color: #f7f8f2; }
+.prediction-table :is(th, td):first-child {
+  width: 21%;
+  padding-left: var(--prediction-inset);
+  text-align: left;
+}
+.prediction-table :is(th, td):nth-child(2) { text-align: left; }
+.prediction-table :is(th, td):last-child { padding-right: var(--prediction-inset); }
+.prediction-table .prediction-player {
+  min-width: 145px;
+  max-width: 220px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.prediction-player-label { min-width: 0; overflow-wrap: anywhere; }
+.prediction-table .prediction-up, .prediction-table .prediction-qualify { color: #195644; }
+.prediction-table .prediction-qualify { font-weight: 650; }
+.prediction-table .prediction-down { color: #a04432; }
+.prediction-knockout-table { min-width: 660px; }
+.prediction-knockout-table.is-monthly { min-width: 580px; }
+.prediction-knockout-table.is-monthly td:nth-child(2) { text-align: right; }
+.prediction-table .prediction-gold { color: #82600d; background-color: #faf6e9; }
+.prediction-table .prediction-silver { color: #56616e; background-color: #f2f4f6; }
+.prediction-table .prediction-bronze { color: #885234; background-color: #faf2e9; }
+.prediction-table .prediction-members-heading, .prediction-table .prediction-team-members { text-align: left; }
+.prediction-table .prediction-team-members { min-width: 184px; max-width: 260px; white-space: normal; }
+.prediction-team-members .table-player + .table-player { margin-top: 6px; }
+.prediction-team-name { font-weight: 650; }
+.prediction-table td.prediction-empty {
+  color: var(--muted);
+  padding: 24px var(--prediction-inset);
+  white-space: normal;
+}
+.prediction-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px var(--prediction-inset);
+  border-top: 1px solid var(--line);
+}
+.prediction-pagination .page-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #48554c;
+  font-size: 13px;
+}
+.prediction-blank:not(:empty), .prediction-message {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 15px var(--prediction-inset);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+}
+.prediction-message[role="alert"] { color: #a04432; }
 @media (max-width: 700px) {
-  .prediction-intro { padding: 31px 0 20px; }
-  .prediction-intro h1 { font-size: 28px; }
-  .prediction-intro > p:last-child { font-size: 12px; }
-  .prediction-nav { gap: 5px; margin-bottom: 21px; }
-  .prediction-nav a { padding: 8px 12px; font-size: 11px; }
-  .prediction-section .panel-heading { flex-wrap: wrap; gap: 6px; }
-  .prediction-edition { font-size: 10px; }
-  .prediction-controls { padding: 14px 18px; gap: 12px; }
-  .prediction-controls label { flex: 1 1 calc(50% - 12px); display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
-  .prediction-controls label > span { font-size: 10px; }
-  .prediction-controls label:first-child { flex-basis: 100%; }
-  .prediction-controls input { width: 100%; }
-  .prediction-controls input, .prediction-controls select { font-size: 16px; min-height: 39px; }
-  .prediction-controls select { width: 100%; }
-  .prediction-result { padding: 11px 18px; font-size: 10px; }
-  .prediction-table { min-width: 810px; }
-  .prediction-knockout-table { min-width: 680px; }
-  .prediction-table th { padding: 12px 12px; font-size: 10px; }
-  .prediction-table td { padding: 13px 12px; font-size: 12px; }
-  .prediction-table th:first-child, .prediction-table td:first-child { padding-left: 18px; }
-  .prediction-table th:last-child, .prediction-table td:last-child { padding-right: 18px; }
+  .prediction-intro { align-items: flex-start; flex-direction: column; gap: 14px; padding: 24px 0 18px; }
+  .prediction-nav { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+  .prediction-nav a { padding-inline: 6px; }
+  .prediction-section .panel-heading { padding-block: 16px; }
+  .prediction-section h2 { font-size: 19px; }
+  .prediction-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+  .prediction-controls label:first-child { grid-column: 1 / -1; }
+  .prediction-controls label:has([data-prediction-group]), .prediction-controls [data-prediction-ko-group-control] { grid-column: 1 / -1; }
+  .prediction-controls input, .prediction-controls select { font-size: 16px; min-height: 42px; }
+  .prediction-table :is(th, td) { padding: 12px 10px; }
+  .prediction-table :is(th, td):first-child:not([colspan]) {
+    position: sticky;
+    z-index: 1;
+    left: 0;
+    width: 132px;
+    min-width: 116px;
+    max-width: 144px;
+    box-shadow: inset -1px 0 var(--line);
+  }
+  .prediction-table .player-avatar { width: 25px; height: 25px; flex: 0 0 25px; }
   .prediction-pagination .page-controls { margin-left: auto; }
-  .prediction-blank { min-height: 70px; padding: 0 18px 15px; font-size: 10px; }
-  .prediction-message { padding: 8px 18px 22px; }
 }
