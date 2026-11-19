@@ -115,6 +115,18 @@ def build_results(bundle, *, version, registry=None, generated_at=None, simulato
     return {"manifest": manifest, "files": files}
 
 
+def stage_needs_forecast(family, stage, descriptor):
+    status = descriptor.get('status')
+    if status not in ('ongoing', 'ended', 'not_started', 'unverified'):
+        raise PredictionError('prediction_stage_status_invalid')
+    if 'forecast_available' not in descriptor:
+        return status == 'ongoing'
+    if (descriptor['forecast_available'] is False and status == 'ongoing' and stage == 'knockout'
+            and family in ('team', 'pair') and 'path' not in descriptor):
+        return False
+    raise PredictionError('prediction_stage_availability_invalid')
+
+
 def build_stage_results(bundle, registry, *, generated_at, simulator=None):
     from copy import deepcopy
     context=bundle['stage_context']
@@ -125,7 +137,7 @@ def build_stage_results(bundle, registry, *, generated_at, simulator=None):
     files=[]
     for item in manifest['items']:
         for stage,descriptor in item['stages'].items():
-            if descriptor['status']!='ongoing':
+            if not stage_needs_forecast(item['family'], stage, descriptor):
                 continue
             module=next((m for m in bundle['modules'] if m['family']==item['family'] and m['edition']==item['edition']
                          and m.get('stage', 'swiss')==stage),None)
@@ -152,10 +164,14 @@ def reusable_manifest(manifest, version, registry):
     if not manifest:
         return False
     if manifest.get('schema_version')=='xinrui-prediction-manifest-v2':
-        return (manifest.get('publication_version')==version and {i.get('family') for i in manifest.get('items',[])}=={s['family'] for s in registry}
-                and all(set(i.get('stages',{}))=={'swiss','knockout'} and all(
-                    d.get('status') in ('not_started','ongoing','ended') and (d.get('status')!='ongoing' or isinstance(d.get('path'),str))
-                    for d in i['stages'].values()) for i in manifest['items']))
+        try:
+            return (manifest.get('publication_version') == version
+                    and {i['family'] for i in manifest['items']} == {s['family'] for s in registry}
+                    and all(set(i['stages']) == {'swiss', 'knockout'} and all(
+                        isinstance(d.get('path'), str) if stage_needs_forecast(i['family'], stage, d) else 'path' not in d
+                        for stage, d in i['stages'].items()) for i in manifest['items']))
+        except (AttributeError, KeyError, TypeError, PredictionError):
+            return False
     if (manifest.get("schema_version") != "xinrui-prediction-manifest-v1"
             or manifest.get("publication_version") != version
             or not isinstance(manifest.get("snapshot_id"), str) or not VERSION.fullmatch(manifest["snapshot_id"])

@@ -413,9 +413,14 @@ def validate_prediction_manifest(value, *, version):
                     or set(item['stages'])!={'swiss','knockout'} or item['edition']!=value.get('edition')):
                 raise PublicationError('Prediction stage identity is invalid')
             identifiers.add(item['id'])
-            for stage in item['stages'].values():
-                if stage.get('status') not in ('not_started','ongoing','ended'):
+            for name, stage in item['stages'].items():
+                if stage.get('status') not in ('not_started','ongoing','ended','unverified'):
                     raise PublicationError('Prediction stage status is invalid')
+                if 'forecast_available' in stage:
+                    if (stage['forecast_available'] is not False or stage['status'] != 'ongoing'
+                            or name != 'knockout' or item['family'] not in ('team', 'pair') or 'path' in stage):
+                        raise PublicationError('Prediction stage availability is invalid')
+                    continue
                 if stage['status']=='ongoing':
                     if stage.get('path') not in paths or stage['path'] in referenced:
                         raise PublicationError('Prediction stage file is missing')

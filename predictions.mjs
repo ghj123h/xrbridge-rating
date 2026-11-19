@@ -370,15 +370,20 @@ export function mountPredictions(container, {
       let item = latestItem(index.items, family);
       if (index.schema_version === 'xinrui-prediction-manifest-v2') {
         const month = index.preview === 'historical_knockout' ? index.edition : beijingEdition(now());
-        item = index.items.find(entry => entry.family === family && entry.edition === month) || {
-          family, edition: month, stages: { swiss: {status: 'not_started'}, knockout: {status: 'not_started'} },
-        };
+        item = index.items.find(entry => entry.family === family && entry.edition === month);
         ui.edition.textContent = editionLabel(month);
-        const swiss = item.stages.swiss, knockout = item.stages.knockout;
-        const stateText = status => status === 'ended' ? '赛事已结束' : status === 'not_started' ? '赛事未开始' : '';
         ui['ko-edition'].textContent = editionLabel(month);
-        if (ui.knockout) ui.knockout.textContent = stateText(knockout.status);
-        if (knockout.status === 'ongoing') {
+        if (!item) {
+          ui.description.textContent = '暂无本届预测。';
+          return;
+        }
+        const swiss = item.stages.swiss, knockout = item.stages.knockout;
+        const stageText = { ended: '赛事已结束', not_started: '赛事未开始', unverified: '对阵待核实' };
+        if (ui.knockout) ui.knockout.textContent = stageText[knockout.status] || '';
+        if (knockout.status === 'ongoing' && knockout.forecast_available === false
+            && (family === 'team' || family === 'pair') && !('path' in knockout)) {
+          ui.knockout.textContent = '已公布对阵，暂无预测';
+        } else if (knockout.status === 'ongoing') {
           if (ui.knockout) ui.knockout.textContent = '预测正在加载…';
           try {
             if (!knockout.path) throw new Error('Ongoing knockout forecast missing');
@@ -394,7 +399,7 @@ export function mountPredictions(container, {
         ui.description.textContent = '';
         if (swiss.status !== 'ongoing') {
           ui['swiss-blank'].hidden = false;
-          ui['swiss-blank'].textContent = stateText(swiss.status);
+          ui['swiss-blank'].textContent = stageText[swiss.status] || '';
           return;
         }
         if (!swiss.path) throw new Error('Ongoing forecast missing');
