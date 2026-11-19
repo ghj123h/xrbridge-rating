@@ -137,10 +137,15 @@ def build_stage_results(bundle, registry, *, generated_at, simulator=None):
     files=[]
     for item in manifest['items']:
         for stage,descriptor in item['stages'].items():
-            if not stage_needs_forecast(item['family'], stage, descriptor):
+            required = stage_needs_forecast(item['family'], stage, descriptor)
+            if not required and 'forecast_available' not in descriptor:
                 continue
-            module=next((m for m in bundle['modules'] if m['family']==item['family'] and m['edition']==item['edition']
+            module=next((m for m in bundle.get('modules', []) if m['family']==item['family'] and m['edition']==item['edition']
                          and m.get('stage', 'swiss')==stage),None)
+            if not required:
+                if module is None:
+                    continue  # Historical accepted snapshot without a bracket input.
+                del descriptor['forecast_available']
             if module is None:
                 raise PredictionError('prediction_ongoing_input_missing')
             spec=get_prediction_spec(item['family'],registry)
@@ -160,15 +165,18 @@ def build_stage_results(bundle, registry, *, generated_at, simulator=None):
     return {'manifest':manifest,'files':files}
 
 
-def reusable_manifest(manifest, version, registry):
+def reusable_manifest(manifest, version, registry, *, modules=()):
     if not manifest:
         return False
     if manifest.get('schema_version')=='xinrui-prediction-manifest-v2':
         try:
+            # An old status-only file cannot satisfy a newly accepted draw.
+            available = {(m['family'], m['edition'], m.get('stage', 'swiss')) for m in modules}
             return (manifest.get('publication_version') == version
                     and {i['family'] for i in manifest['items']} == {s['family'] for s in registry}
                     and all(set(i['stages']) == {'swiss', 'knockout'} and all(
-                        isinstance(d.get('path'), str) if stage_needs_forecast(i['family'], stage, d) else 'path' not in d
+                        ((i['family'], i['edition'], stage) not in available or 'forecast_available' not in d)
+                        and (isinstance(d.get('path'), str) if stage_needs_forecast(i['family'], stage, d) else 'path' not in d)
                         for stage, d in i['stages'].items()) for i in manifest['items']))
         except (AttributeError, KeyError, TypeError, PredictionError):
             return False
@@ -256,7 +264,7 @@ def run(version, client, *, registry=None, generated_at=None, simulator=None):
     bundle = client.request(part="input", version=version)
     validate_bundle(bundle, version, selected)
     existing = client.request(part="manifest", version=version, allow_missing=True)
-    if (reusable_manifest(existing, version, selected)
+    if (reusable_manifest(existing, version, selected, modules=bundle['modules'])
             and existing.get("snapshot_id") == bundle["snapshot_id"]):
         return {"status": "reused", "publication_version": version, "snapshot_id": existing["snapshot_id"],
             "modules": len(existing.get("items", []))}

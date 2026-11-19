@@ -134,6 +134,9 @@
 .prediction-knockout-table { min-width: 660px; }
 .prediction-knockout-table.is-monthly { min-width: 580px; }
 .prediction-knockout-table.is-monthly td:nth-child(2) { text-align: right; }
+.prediction-table .prediction-knockout-opponent { text-align: left; }
+.prediction-table td.prediction-knockout-opponent { min-width: 95px; max-width: 175px; white-space: normal; overflow-wrap: anywhere; }
+.prediction-knockout-opponent small { display: block; margin-top: 3px; color: var(--muted); }
 .prediction-table .prediction-gold { color: #82600d; background-color: #faf6e9; }
 .prediction-table .prediction-silver { color: #56616e; background-color: #f2f4f6; }
 .prediction-table .prediction-bronze { color: #885234; background-color: #faf2e9; }

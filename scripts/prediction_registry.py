@@ -30,6 +30,7 @@ PREDICTION_REGISTRY = (
     },
     {
         "id": "team", "family": "team", "provider": "prediction_providers:team",
+        "knockout_prediction": {"provider": "prediction_team_knockout:forecast", "format": "team_fixed_knockout", "team_size": 4},
         "divisions": ["甲级", "乙级"],
         "parent_matchtype": 64, "child_matchtype": 53,
         "title_pattern": r"^(?!.*双人)(?=.*团体(?:等级)?赛).*?" + _DATE, "total_rounds": 9, "event_total_rounds": 14,
@@ -47,6 +48,7 @@ PREDICTION_REGISTRY = (
     },
     {
         "id": "pair", "family": "pair", "provider": "prediction_providers:pair",
+        "knockout_prediction": {"provider": "prediction_team_knockout:forecast", "format": "team_fixed_knockout", "team_size": 2},
         "divisions": ["甲级", "乙级"],
         "parent_matchtype": 64, "child_matchtype": 53,
         "title_pattern": r"^(?=.*双人团体(?:等级)?赛).*?" + _DATE, "total_rounds": 9, "event_total_rounds": 14,
@@ -82,10 +84,11 @@ def load_provider(spec):
     return getattr(importlib.import_module(module), name)
 
 
-def probability_applicability(family, group):
+def probability_applicability(family, group, *, divisions=None):
     """League boundaries include divisions excluded from the forecast roster."""
     key = group['id'].split('-')[0]
     division = {'a':'甲级','b':'乙级','c':'丙级','ungraded':'无等级'}.get(key)
-    divisions = get_prediction_spec(family)['divisions']
+    if divisions is None:
+        divisions = get_prediction_spec(family)['divisions']
     return {'promotion_applicable': division != divisions[0],
             'relegation_applicable': division != divisions[-1]}

@@ -138,7 +138,7 @@ def forecast(module, bundle, spec, *, generated_at, simulator=simulate_group):
         outcomes = {person["uid"]: person for person in simulated["players"]}
         value["groups"].append({"id": group_id, "name": group["name"], "count": count,
             "boards": boards, "promote": promote, "stay": stay, "relegate": relegate,
-            **probability_applicability(module['family'], group),
+            **probability_applicability(module['family'], group, divisions=spec['divisions']),
             **({'qualify': min(qualify, count)} if qualify is not None else {})})
         for person in people:
             outcome = outcomes[person["uid"]]

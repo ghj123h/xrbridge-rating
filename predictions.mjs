@@ -8,6 +8,11 @@ const DEFAULT_COLORS = {
 const format = (value, digits = 1) => Number.isFinite(value)
   ? value.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
 const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
+const KNOCKOUT_MEDALS = [
+  ['champion_probability', '冠军', 'prediction-gold'],
+  ['runner_up_probability', '亚军', 'prediction-silver'],
+  ['bronze_probability', '季军', 'prediction-bronze'],
+];
 export const beijingEdition = (date = new Date()) => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit',
 }).formatToParts(date).filter(part => ['year', 'month'].includes(part.type)).map(part => part.value).join('');
@@ -28,7 +33,7 @@ export function mountPredictions(container, {
       </nav>
     </header>
     <p class="prediction-status" data-prediction-description role="status"></p>
-    <section class="panel prediction-section" aria-labelledby="prediction-swiss-title">
+    <section class="panel prediction-section" data-prediction-swiss-section aria-labelledby="prediction-swiss-title">
       <div class="panel-heading"><h2 id="prediction-swiss-title">积分赛预测</h2><span class="prediction-edition" data-prediction-edition></span></div>
       <div class="prediction-message" data-prediction-loading role="status" hidden>正在读取预测…</div>
       <div class="prediction-message" data-prediction-error role="alert" hidden><p>预测暂时未能加载，请重试。</p><button type="button" class="button button-secondary" data-prediction-retry>重新加载</button></div>
@@ -47,19 +52,19 @@ export function mountPredictions(container, {
       </div>
       <div class="prediction-blank" data-prediction-swiss-blank></div>
     </section>
-    <section class="panel prediction-section" aria-labelledby="prediction-knockout-title">
+    <section class="panel prediction-section" data-prediction-ko-section aria-labelledby="prediction-knockout-title">
       <div class="panel-heading"><h2 id="prediction-knockout-title">淘汰赛预测</h2><span class="prediction-edition" data-prediction-ko-edition></span></div>
       <div class="prediction-blank" data-prediction-knockout></div>
       <div class="prediction-message" data-prediction-ko-error role="alert" hidden>预测暂时未能加载。<button type="button" class="button button-secondary" data-prediction-ko-retry>重新加载</button></div>
       <div data-prediction-ko-body hidden>
         <div class="prediction-controls">
-          <label><span>搜索牌手</span><input type="search" data-prediction-ko-search placeholder="输入牌手昵称" autocomplete="off"></label>
+          <label><span data-prediction-ko-search-label>搜索牌手</span><input type="search" data-prediction-ko-search placeholder="输入牌手昵称" autocomplete="off"></label>
           <label data-prediction-ko-group-control><span>分组</span><select data-prediction-ko-group><option value="">全部分组</option></select></label>
-          <label><span>排序</span><select data-prediction-ko-sort><option value="champion_probability">冠军概率 ↓</option><option value="runner_up_probability">亚军概率 ↓</option><option value="bronze_probability">季军概率 ↓</option><option value="next_round_probability">晋级下一轮概率 ↓</option><option value="display_rating">等级分 ↓</option></select></label>
+          <label><span>排序</span><select data-prediction-ko-sort></select></label>
           <label><span>每页</span><select data-prediction-ko-size><option>50</option><option>100</option><option>200</option></select></label>
         </div>
         <div class="table-scroll" tabindex="0" role="region" aria-labelledby="prediction-knockout-title"><table class="prediction-table prediction-knockout-table" data-prediction-ko-table aria-label="存活牌手晋级与奖牌概率">
-          <thead><tr><th scope="col">牌手</th><th scope="col" data-prediction-ko-group-column>分组</th><th scope="col">等级分</th><th scope="col">晋级下一轮</th><th scope="col" class="prediction-gold">冠军</th><th scope="col" class="prediction-silver">亚军</th><th scope="col" class="prediction-bronze">季军</th></tr></thead>
+          <thead><tr data-prediction-ko-columns></tr></thead>
           <tbody data-prediction-ko-players></tbody>
         </table></div>
         <div class="pagination prediction-pagination"><p class="prediction-result" data-prediction-ko-result aria-live="polite"></p><div class="page-controls"><button type="button" class="pagination-button" data-prediction-ko-prev aria-label="淘汰赛名单上一页">←</button><span data-prediction-ko-page></span><button type="button" class="pagination-button" data-prediction-ko-next aria-label="淘汰赛名单下一页">→</button></div></div>
@@ -69,8 +74,8 @@ export function mountPredictions(container, {
   const find = selector => container.querySelector(`[data-prediction-${selector}]`);
   const ui = Object.fromEntries(['title', 'description', 'edition', 'loading', 'error', 'retry',
     'monthly', 'search', 'group', 'sort', 'size', 'result', 'players', 'prev', 'next',
-    'page', 'swiss-blank', 'columns', 'search-label', 'table', 'knockout',
-    ...['edition', 'error', 'retry', 'body', 'search', 'group', 'group-control', 'group-column', 'table', 'sort', 'size', 'result', 'players', 'prev', 'next', 'page'].map(key => `ko-${key}`)]
+    'page', 'swiss-blank', 'swiss-section', 'columns', 'search-label', 'table', 'knockout',
+    ...['section', 'edition', 'error', 'retry', 'body', 'search', 'search-label', 'group', 'group-control', 'columns', 'table', 'sort', 'size', 'result', 'players', 'prev', 'next', 'page'].map(key => `ko-${key}`)]
     .map(key => [key, find(key)]));
   let data = null;
   let catalogue = null;
@@ -83,7 +88,9 @@ export function mountPredictions(container, {
   let groupMap = new Map();
   let knockoutData = null;
   let knockoutPage = 0;
-  const teamSnapshot = value => value?.schema_version === 'xinrui-team-swiss-predictions-v1';
+  let knockoutProbabilities = [];
+  const teamKnockout = value => value.schema_version === 'xinrui-team-knockout-predictions-v1';
+  const teamSnapshot = value => value.schema_version === 'xinrui-team-swiss-predictions-v1' || teamKnockout(value);
   const rowsOf = value => teamSnapshot(value) ? value.teams : value.players;
 
   function playerColor(player) {
@@ -128,61 +135,116 @@ export function mountPredictions(container, {
     identity.append(avatar, label);
     return identity;
   }
+  function teamMembers(row, team) {
+    const members = cell(row, '', 'prediction-team-members');
+    for (const member of team.members) members.append(playerIdentity(member, {showRating: true}));
+  }
+  function knockoutColumns(value) {
+    if (!teamKnockout(value)) return [['next_round_probability', '晋级下一轮', 'prediction-qualify'], ...KNOCKOUT_MEDALS];
+    const columns = [];
+    const rounds = Math.max(...value.groups.map(group => group.total_rounds));
+    for (let exponent = rounds - 1; exponent >= 1; exponent--) {
+      const size = 2 ** exponent;
+      const title = ({2: '进入决赛', 4: '晋级四强', 8: '晋级八强'})[size] || `晋级${size}强`;
+      columns.push([`advance_${size}`, title, 'prediction-qualify', exponent]);
+    }
+    return [...columns, ...KNOCKOUT_MEDALS];
+  }
   function renderKnockout() {
     if (!knockoutData) return;
-    const showGroups = knockoutData.event !== 'monthly';
+    const teams = teamKnockout(knockoutData);
+    const rows = rowsOf(knockoutData);
+    const unit = teams ? '队' : '人';
     const groups = new Map(knockoutData.groups.map(group => [group.id, group]));
+    const teamNames = teams ? new Map(rows.map(team => [`${team.group}:${team.id}`, team.name])) : null;
     const needle = ui['ko-search'].value.trim().toLocaleLowerCase();
-    const selected = knockoutData.players.filter(player => (!showGroups || !ui['ko-group'].value || player.group === ui['ko-group'].value)
-      && (!needle || player.nickname.toLocaleLowerCase().includes(needle)));
+    const selected = rows.filter(row => (!teams || !ui['ko-group'].value || row.group === ui['ko-group'].value)
+      && (!needle || (teams ? [row.name, ...row.members.map(member => member.nickname)] : [row.nickname])
+        .some(name => name.toLocaleLowerCase().includes(needle))));
     const key = ui['ko-sort'].value;
-    selected.sort((a, b) => Number(b[key] ?? -1) - Number(a[key] ?? -1) || a.id.localeCompare(b.id));
+    const sortColumn = knockoutProbabilities.find(([field]) => field === key) || [key];
+    const valueOf = (row, [field, , , exponent]) => exponent === undefined ? row[field]
+      : row.advancement_probabilities[groups.get(row.group).total_rounds - exponent - 1];
+    selected.sort((a, b) => (valueOf(b, sortColumn) ?? -1) - (valueOf(a, sortColumn) ?? -1) || a.id.localeCompare(b.id));
     const size = Number(ui['ko-size'].value);
     const pages = Math.max(1, Math.ceil(selected.length / size));
     knockoutPage = Math.max(0, Math.min(knockoutPage, pages - 1));
     ui['ko-players'].replaceChildren();
-    for (const player of selected.slice(knockoutPage * size, (knockoutPage + 1) * size)) {
+    for (const row of selected.slice(knockoutPage * size, (knockoutPage + 1) * size)) {
       const tr = document.createElement('tr');
-      cell(tr, '', 'prediction-player').append(playerIdentity(player));
-      if (showGroups) cell(tr, groups.get(player.group)?.name || '—');
-      cell(tr, formatRating(player.display_rating));
-      cell(tr, percent(player.next_round_probability), 'prediction-qualify');
-      cell(tr, percent(player.champion_probability), 'prediction-gold');
-      cell(tr, percent(player.runner_up_probability), 'prediction-silver');
-      cell(tr, percent(player.bronze_probability), 'prediction-bronze');
+      if (teams) {
+        cell(tr, row.name, 'prediction-player prediction-team-name');
+        cell(tr, groups.get(row.group)?.name || '—', 'prediction-group-name');
+        const opponent = cell(tr, teamNames.get(`${row.group}:${row.opponent_id}`) || '待公布', 'prediction-knockout-opponent');
+        if (row.table != null) {
+          const table = document.createElement('small');
+          table.textContent = `第 ${row.table} 桌`;
+          opponent.append(table);
+        }
+        teamMembers(tr, row);
+      } else {
+        cell(tr, '', 'prediction-player').append(playerIdentity(row));
+        cell(tr, formatRating(row.display_rating));
+      }
+      for (const column of knockoutProbabilities) cell(tr, percent(valueOf(row, column)), column[2]);
       ui['ko-players'].append(tr);
     }
     if (!selected.length) {
       const tr = document.createElement('tr');
-      cell(tr, showGroups ? '没有符合条件的牌手，试试其他昵称或分组。' : '没有符合条件的牌手，试试其他昵称。', 'prediction-empty').colSpan = showGroups ? 7 : 6;
+      cell(tr, teams ? '没有符合条件的队伍，试试其他队名、队员昵称或分组。' : '没有符合条件的牌手，试试其他昵称。',
+        'prediction-empty').colSpan = ui['ko-columns'].children.length;
       ui['ko-players'].append(tr);
     }
-    ui['ko-result'].textContent = needle || (showGroups && ui['ko-group'].value)
-      ? `匹配 ${format(selected.length, 0)} 人 · 存活 ${format(knockoutData.players.length, 0)} 人`
-      : `仍在赛 ${format(knockoutData.players.length, 0)} 人`;
+    ui['ko-result'].textContent = needle || (teams && ui['ko-group'].value)
+      ? `匹配 ${format(selected.length, 0)} ${unit} · 存活 ${format(rows.length, 0)} ${unit}`
+      : `仍在赛 ${format(rows.length, 0)} ${unit}`;
     ui['ko-page'].textContent = `第 ${knockoutPage + 1} / ${pages} 页`;
     ui['ko-prev'].disabled = knockoutPage === 0;
     ui['ko-next'].disabled = knockoutPage >= pages - 1;
   }
   function installKnockout(value) {
-    const showGroups = value.event !== 'monthly';
-    ui['ko-group-control'].hidden = !showGroups;
-    ui['ko-group-column'].hidden = !showGroups;
-    ui['ko-table'].classList.toggle('is-monthly', !showGroups);
+    const teams = teamKnockout(value);
+    const unit = teams ? '队' : '人';
+    ui['ko-group-control'].hidden = !teams;
+    ui['ko-table'].classList.toggle('is-monthly', !teams);
     if (knockoutData !== value) {
       knockoutData = value;
       knockoutPage = 0;
       ui['ko-search'].value = '';
+      ui['ko-search-label'].textContent = teams ? '搜索队伍或队员' : '搜索牌手';
+      ui['ko-search'].placeholder = teams ? '输入队名或队员昵称' : '输入牌手昵称';
+      ui['ko-table'].setAttribute('aria-label', teams ? '在赛队伍晋级与奖牌概率' : '在赛牌手晋级与奖牌概率');
+      knockoutProbabilities = knockoutColumns(value);
+      const columns = teams
+        ? [['队伍'], ['分组'], ['本轮对手', 'prediction-knockout-opponent'], ['队员', 'prediction-members-heading']]
+        : [['牌手'], ['等级分']];
+      ui['ko-columns'].replaceChildren();
+      for (const [title, className] of [...columns, ...knockoutProbabilities.map(([, title, css]) => [title, css])]) {
+        const th = document.createElement('th');
+        th.setAttribute('scope', 'col');
+        th.textContent = title;
+        if (className) th.className = className;
+        ui['ko-columns'].append(th);
+      }
+      ui['ko-sort'].replaceChildren();
+      const sorts = knockoutProbabilities.map(([key, title]) => [key, `${title}概率 ↓`]);
+      if (!teams) sorts.push(['display_rating', '等级分 ↓']);
+      for (const [key, title] of sorts) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = title;
+        ui['ko-sort'].append(option);
+      }
       ui['ko-sort'].value = 'champion_probability';
       const all = document.createElement('option'); all.value = ''; all.textContent = '全部分组';
       ui['ko-group'].replaceChildren(all);
       for (const group of value.groups) {
         const option = document.createElement('option'); option.value = group.id;
-        option.textContent = `${group.name}（${group.count} 人）`; ui['ko-group'].append(option);
+        option.textContent = `${group.name}（${format(group.count, 0)} ${unit}）`; ui['ko-group'].append(option);
       }
       ui['ko-group'].value = '';
     }
-    ui['ko-edition'].textContent = `${editionLabel(value.edition)} · ${format(value.players.length, 0)} 人`;
+    ui['ko-edition'].textContent = `${editionLabel(value.edition)} · ${format(rowsOf(value).length, 0)} ${unit}`;
     ui.knockout.hidden = true;
     ui['ko-body'].hidden = false;
     renderKnockout();
@@ -211,10 +273,7 @@ export function mountPredictions(container, {
       if (teams) {
         cell(tr, player.name, 'prediction-player prediction-team-name');
         cell(tr, groupMap.get(player.group)?.name || '—', 'prediction-group-name');
-        const members = cell(tr, '', 'prediction-team-members');
-        for (const member of player.members) {
-          members.append(playerIdentity(member, {showRating: true}));
-        }
+        teamMembers(tr, player);
         cell(tr, percent(player.qualification_probability), 'prediction-qualify');
         cell(tr, probabilityText(player.promotion_probability, group?.promotion_applicable), 'prediction-up');
         cell(tr, percent(player.retention_probability), 'prediction-stay');
@@ -290,9 +349,9 @@ export function mountPredictions(container, {
     const url = new URL(item.path, new URL(avatarBase, document.baseURI)).href;
     const key = `${index.publication_version}:${url}`;
     if (!snapshots.has(key)) snapshots.set(key, readJSON(url).then(value => {
-      if (!['xinrui-predictions-v1', 'xinrui-team-swiss-predictions-v1', 'xinrui-knockout-predictions-v1'].includes(value.schema_version) || value.event !== item.family
+      if (!['xinrui-predictions-v1', 'xinrui-team-swiss-predictions-v1', 'xinrui-knockout-predictions-v1', 'xinrui-team-knockout-predictions-v1'].includes(value.schema_version) || value.event !== item.family
         || value.edition !== item.edition || value.publication_version !== index.publication_version
-        || (item.stage === 'knockout') !== (value.schema_version === 'xinrui-knockout-predictions-v1')
+        || (item.stage === 'knockout') !== (value.schema_version === 'xinrui-knockout-predictions-v1' || teamKnockout(value))
         || !Array.isArray(rowsOf(value)) || !Array.isArray(value.groups)
         || index.snapshot_id && value.snapshot_id !== index.snapshot_id
         || index.rating_cutoff && value.rating_cutoff !== index.rating_cutoff) throw new Error('Prediction format mismatch');
@@ -367,10 +426,13 @@ export function mountPredictions(container, {
     try {
       const index = await loadCatalogue();
       if (turn !== sequence) return;
-      let item = latestItem(index.items, family);
-      if (index.schema_version === 'xinrui-prediction-manifest-v2') {
-        const month = index.preview === 'historical_knockout' ? index.edition : beijingEdition(now());
-        item = index.items.find(entry => entry.family === family && entry.edition === month);
+      const staged = index.schema_version === 'xinrui-prediction-manifest-v2';
+      const month = index.preview === 'historical_knockout' ? index.edition : beijingEdition(now());
+      let item = staged ? index.items.find(entry => entry.family === family && entry.edition === month) : latestItem(index.items, family);
+      const knockoutFirst = item?.stages?.knockout?.status === 'ongoing' && item.stages.knockout.path && item.stages.swiss.status !== 'ongoing';
+      const lastPanel = knockoutFirst ? ui['swiss-section'] : ui['ko-section'];
+      if (container.lastElementChild !== lastPanel) container.append(lastPanel);
+      if (staged) {
         ui.edition.textContent = editionLabel(month);
         ui['ko-edition'].textContent = editionLabel(month);
         if (!item) {
