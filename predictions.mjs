@@ -429,7 +429,9 @@ export function mountPredictions(container, {
       const staged = index.schema_version === 'xinrui-prediction-manifest-v2';
       const month = index.preview === 'historical_knockout' ? index.edition : beijingEdition(now());
       let item = staged ? index.items.find(entry => entry.family === family && entry.edition === month) : latestItem(index.items, family);
-      const knockoutFirst = item?.stages?.knockout?.status === 'ongoing' && item.stages.knockout.path && item.stages.swiss.status !== 'ongoing';
+      const knockoutFirst = item?.stages?.knockout?.status === 'ongoing'
+        && (item.stages.knockout.path || item.stages.knockout.service_unavailable === true)
+        && item.stages.swiss.status !== 'ongoing';
       const lastPanel = knockoutFirst ? ui['swiss-section'] : ui['ko-section'];
       if (container.lastElementChild !== lastPanel) container.append(lastPanel);
       if (staged) {
@@ -442,7 +444,9 @@ export function mountPredictions(container, {
         const swiss = item.stages.swiss, knockout = item.stages.knockout;
         const stageText = { ended: '赛事已结束', not_started: '赛事未开始', unverified: '对阵待核实' };
         if (ui.knockout) ui.knockout.textContent = stageText[knockout.status] || '';
-        if (knockout.status === 'ongoing' && knockout.forecast_available === false
+        if (knockout.status === 'ongoing' && knockout.service_unavailable === true && !('path' in knockout)) {
+          ui.knockout.textContent = '该服务暂不可用';
+        } else if (knockout.status === 'ongoing' && knockout.forecast_available === false
             && (family === 'team' || family === 'pair') && !('path' in knockout)) {
           ui.knockout.textContent = '已公布对阵，暂无预测';
         } else if (knockout.status === 'ongoing') {
@@ -462,6 +466,11 @@ export function mountPredictions(container, {
         if (swiss.status !== 'ongoing') {
           ui['swiss-blank'].hidden = false;
           ui['swiss-blank'].textContent = stageText[swiss.status] || '';
+          return;
+        }
+        if (swiss.status === 'ongoing' && swiss.service_unavailable === true && !('path' in swiss)) {
+          ui['swiss-blank'].hidden = false;
+          ui['swiss-blank'].textContent = '该服务暂不可用';
           return;
         }
         if (!swiss.path) throw new Error('Ongoing forecast missing');

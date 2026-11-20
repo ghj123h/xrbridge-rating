@@ -1,0 +1,46 @@
+name: Deploy static rating site to GitHub Pages
+
+on:
+  push:
+    branches:
+      - codex/pages
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - name: Stage and verify static site bundle
+        run: |
+          rm -rf pages-bundle
+          mkdir -p pages-bundle
+          cp .nojekyll index.html app.js player-name.js rating-core.mjs score-chart.mjs styles.css predictions.mjs predictions.css pages-bundle/
+          cp -a data avatars predictions pages-bundle/
+          test -f pages-bundle/data/manifest.json
+          test -f pages-bundle/data/index.json.gz
+          test -f pages-bundle/predictions/index.json
+          test "$(find pages-bundle/data -type f | wc -l)" -eq 258
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          name: github-pages
+          path: pages-bundle
+          include-hidden-files: true
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages
